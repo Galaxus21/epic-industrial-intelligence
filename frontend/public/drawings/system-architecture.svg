@@ -1,0 +1,185 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  AI Operations Brain — System Architecture Diagram
+  Source: IMPLEMENTATION_PLAN.md + README.md
+  Theme: Industrial Dark (#0f0f0f / #f59e0b / #10b981)
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 700" width="1000" height="700">
+  <defs>
+    <marker id="arr" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+      <polygon points="0 0, 10 3.5, 0 7" fill="#555"/>
+    </marker>
+    <pattern id="dots" width="30" height="30" patternUnits="userSpaceOnUse">
+      <circle cx="1" cy="1" r="0.8" fill="#1d1d1d"/>
+    </pattern>
+  </defs>
+
+  <!-- Background + dot grid -->
+  <rect width="1000" height="700" fill="#0f0f0f"/>
+  <rect width="1000" height="700" fill="url(#dots)"/>
+
+  <!-- ─── TITLE ──────────────────────────────────────────────── -->
+  <text x="500" y="33" text-anchor="middle"
+        font-family="'Courier New',Courier,monospace" font-size="17" font-weight="bold"
+        fill="#f9f9f9" letter-spacing="3">SYSTEM ARCHITECTURE</text>
+  <text x="500" y="51" text-anchor="middle"
+        font-family="'Courier New',Courier,monospace" font-size="9"
+        fill="#4b5563" letter-spacing="2">AI OPERATIONS BRAIN — INDUSTRIAL KNOWLEDGE GRAPH + MULTI-AGENT AI</text>
+  <line x1="180" y1="59" x2="820" y2="59" stroke="#2a2a2a" stroke-width="0.5"/>
+
+  <!-- ─── ROW 1: DOCUMENTS ───────────────────────────────────── -->
+  <rect x="300" y="68" width="400" height="52" rx="6"
+        fill="#181818" stroke="#f59e0b" stroke-width="1.5"/>
+  <text x="500" y="90" text-anchor="middle"
+        font-family="'Courier New',Courier,monospace" font-size="12" font-weight="bold"
+        fill="#f59e0b" letter-spacing="2">DOCUMENTS</text>
+  <text x="500" y="109" text-anchor="middle"
+        font-family="'Courier New',Courier,monospace" font-size="9"
+        fill="#6b7280">PDF  ·  P&amp;ID  ·  Excel  ·  Images  ·  Scanned Manuals</text>
+
+  <!-- Arrow 1 -->
+  <line x1="500" y1="120" x2="500" y2="147" stroke="#444" stroke-width="1.5" marker-end="url(#arr)"/>
+
+  <!-- ─── ROW 2: DOC INTELLIGENCE AGENT ─────────────────────── -->
+  <rect x="230" y="150" width="540" height="52" rx="6"
+        fill="#181818" stroke="#f97316" stroke-width="1.5"/>
+  <text x="500" y="172" text-anchor="middle"
+        font-family="'Courier New',Courier,monospace" font-size="11" font-weight="bold"
+        fill="#f97316" letter-spacing="1">DOCUMENT INTELLIGENCE AGENT</text>
+  <text x="500" y="191" text-anchor="middle"
+        font-family="'Courier New',Courier,monospace" font-size="9"
+        fill="#6b7280">OCR  ·  Layout Analysis  ·  Entity Extraction  ·  Graph Building</text>
+
+  <!-- Arrows fork → Neo4j and Qdrant -->
+  <path d="M 410 202 C 360 218 270 228 208 247" fill="none" stroke="#444" stroke-width="1.5" marker-end="url(#arr)"/>
+  <path d="M 590 202 C 640 218 730 228 792 247" fill="none" stroke="#444" stroke-width="1.5" marker-end="url(#arr)"/>
+
+  <!-- ─── ROW 3: NEO4J | QDRANT ─────────────────────────────── -->
+  <rect x="60" y="250" width="285" height="52" rx="6"
+        fill="#181818" stroke="#a855f7" stroke-width="1.5"/>
+  <text x="202" y="272" text-anchor="middle"
+        font-family="'Courier New',Courier,monospace" font-size="11" font-weight="bold"
+        fill="#a855f7" letter-spacing="1">KNOWLEDGE GRAPH</text>
+  <text x="202" y="291" text-anchor="middle"
+        font-family="'Courier New',Courier,monospace" font-size="9"
+        fill="#6b7280">Neo4j  ·  Entities &amp; Relationships</text>
+
+  <rect x="655" y="250" width="285" height="52" rx="6"
+        fill="#181818" stroke="#3b82f6" stroke-width="1.5"/>
+  <text x="797" y="272" text-anchor="middle"
+        font-family="'Courier New',Courier,monospace" font-size="11" font-weight="bold"
+        fill="#3b82f6" letter-spacing="1">VECTOR DATABASE</text>
+  <text x="797" y="291" text-anchor="middle"
+        font-family="'Courier New',Courier,monospace" font-size="9"
+        fill="#6b7280">Qdrant  ·  Semantic Embeddings</text>
+
+  <!-- Arrows converge → Orchestrator -->
+  <path d="M 202 302 C 280 324 390 337 455 348" fill="none" stroke="#444" stroke-width="1.5" marker-end="url(#arr)"/>
+  <path d="M 797 302 C 720 324 610 337 545 348" fill="none" stroke="#444" stroke-width="1.5" marker-end="url(#arr)"/>
+
+  <!-- ─── ROW 4: AGENT ORCHESTRATOR ─────────────────────────── -->
+  <rect x="230" y="350" width="540" height="52" rx="6"
+        fill="#181818" stroke="#10b981" stroke-width="1.5"/>
+  <text x="500" y="372" text-anchor="middle"
+        font-family="'Courier New',Courier,monospace" font-size="11" font-weight="bold"
+        fill="#10b981" letter-spacing="1">AGENT ORCHESTRATOR</text>
+  <text x="500" y="391" text-anchor="middle"
+        font-family="'Courier New',Courier,monospace" font-size="9"
+        fill="#6b7280">LangGraph Pipeline  ·  SSE Real-time Streaming  ·  Context Aggregation</text>
+
+  <!-- Fan-out arrows → 4 agents (centers at x: 215, 405, 595, 785) -->
+  <path d="M 355 402 L 215 430" fill="none" stroke="#444" stroke-width="1.2" marker-end="url(#arr)"/>
+  <path d="M 435 402 L 405 430" fill="none" stroke="#444" stroke-width="1.2" marker-end="url(#arr)"/>
+  <path d="M 565 402 L 595 430" fill="none" stroke="#444" stroke-width="1.2" marker-end="url(#arr)"/>
+  <path d="M 645 402 L 785 430" fill="none" stroke="#444" stroke-width="1.2" marker-end="url(#arr)"/>
+
+  <!-- ─── ROW 5: 4 SPECIALIST AGENTS ───────────────────────── -->
+  <!-- Equipment Brain -->
+  <rect x="128" y="432" width="175" height="65" rx="6"
+        fill="#181818" stroke="#a855f7" stroke-width="1.2"/>
+  <text x="215" y="454" text-anchor="middle"
+        font-family="'Courier New',Courier,monospace" font-size="9" font-weight="bold"
+        fill="#a855f7" letter-spacing="1">EQUIPMENT</text>
+  <text x="215" y="467" text-anchor="middle"
+        font-family="'Courier New',Courier,monospace" font-size="9" font-weight="bold"
+        fill="#a855f7" letter-spacing="1">BRAIN</text>
+  <text x="215" y="487" text-anchor="middle"
+        font-family="'Courier New',Courier,monospace" font-size="8"
+        fill="#4b5563">Neo4j Memory Load</text>
+
+  <!-- Maintenance Advisor -->
+  <rect x="318" y="432" width="175" height="65" rx="6"
+        fill="#181818" stroke="#3b82f6" stroke-width="1.2"/>
+  <text x="405" y="454" text-anchor="middle"
+        font-family="'Courier New',Courier,monospace" font-size="9" font-weight="bold"
+        fill="#3b82f6" letter-spacing="1">MAINTENANCE</text>
+  <text x="405" y="467" text-anchor="middle"
+        font-family="'Courier New',Courier,monospace" font-size="9" font-weight="bold"
+        fill="#3b82f6" letter-spacing="1">ADVISOR</text>
+  <text x="405" y="487" text-anchor="middle"
+        font-family="'Courier New',Courier,monospace" font-size="8"
+        fill="#4b5563">RCA + History Search</text>
+
+  <!-- Compliance Agent -->
+  <rect x="508" y="432" width="175" height="65" rx="6"
+        fill="#181818" stroke="#10b981" stroke-width="1.2"/>
+  <text x="595" y="454" text-anchor="middle"
+        font-family="'Courier New',Courier,monospace" font-size="9" font-weight="bold"
+        fill="#10b981" letter-spacing="1">COMPLIANCE</text>
+  <text x="595" y="467" text-anchor="middle"
+        font-family="'Courier New',Courier,monospace" font-size="9" font-weight="bold"
+        fill="#10b981" letter-spacing="1">AGENT</text>
+  <text x="595" y="487" text-anchor="middle"
+        font-family="'Courier New',Courier,monospace" font-size="8"
+        fill="#4b5563">OISD + ISO + SOP</text>
+
+  <!-- Lessons Learned -->
+  <rect x="698" y="432" width="175" height="65" rx="6"
+        fill="#181818" stroke="#f59e0b" stroke-width="1.2"/>
+  <text x="785" y="454" text-anchor="middle"
+        font-family="'Courier New',Courier,monospace" font-size="9" font-weight="bold"
+        fill="#f59e0b" letter-spacing="1">LESSONS</text>
+  <text x="785" y="467" text-anchor="middle"
+        font-family="'Courier New',Courier,monospace" font-size="9" font-weight="bold"
+        fill="#f59e0b" letter-spacing="1">LEARNED</text>
+  <text x="785" y="487" text-anchor="middle"
+        font-family="'Courier New',Courier,monospace" font-size="8"
+        fill="#4b5563">Pattern Correlation</text>
+
+  <!-- Converge arrows → GPT-4.1 -->
+  <path d="M 215 497 C 270 518 370 530 450 540" fill="none" stroke="#444" stroke-width="1.2" marker-end="url(#arr)"/>
+  <path d="M 405 497 C 430 515 455 528 465 540" fill="none" stroke="#444" stroke-width="1.2" marker-end="url(#arr)"/>
+  <path d="M 595 497 C 570 515 545 528 535 540" fill="none" stroke="#444" stroke-width="1.2" marker-end="url(#arr)"/>
+  <path d="M 785 497 C 730 518 630 530 550 540" fill="none" stroke="#444" stroke-width="1.2" marker-end="url(#arr)"/>
+
+  <!-- ─── ROW 6: GPT-4.1 SYNTHESIS ─────────────────────────── -->
+  <rect x="280" y="542" width="440" height="52" rx="6"
+        fill="#181818" stroke="#ec4899" stroke-width="1.5"/>
+  <text x="500" y="564" text-anchor="middle"
+        font-family="'Courier New',Courier,monospace" font-size="11" font-weight="bold"
+        fill="#ec4899" letter-spacing="1">GPT-4.1 SYNTHESIS</text>
+  <text x="500" y="583" text-anchor="middle"
+        font-family="'Courier New',Courier,monospace" font-size="9"
+        fill="#6b7280">Multi-context Reasoning  ·  Risk Assessment  ·  Action Generation</text>
+
+  <!-- Arrow → Dashboard -->
+  <line x1="500" y1="594" x2="500" y2="619" stroke="#444" stroke-width="1.5" marker-end="url(#arr)"/>
+
+  <!-- ─── ROW 7: DASHBOARD ──────────────────────────────────── -->
+  <rect x="280" y="622" width="440" height="52" rx="6"
+        fill="#181818" stroke="#10b981" stroke-width="2"/>
+  <text x="500" y="644" text-anchor="middle"
+        font-family="'Courier New',Courier,monospace" font-size="11" font-weight="bold"
+        fill="#10b981" letter-spacing="1">NEXT.JS DASHBOARD</text>
+  <text x="500" y="663" text-anchor="middle"
+        font-family="'Courier New',Courier,monospace" font-size="9"
+        fill="#6b7280">Industrial Dark UI  ·  Real-time Streaming  ·  Plant Operators</text>
+
+  <!-- ─── TECH LABELS (left side) ─────────────────────────── -->
+  <text x="22" y="276" font-family="'Courier New',Courier,monospace" font-size="8" fill="#3a3a3a">storage</text>
+  <text x="22" y="376" font-family="'Courier New',Courier,monospace" font-size="8" fill="#3a3a3a">orchestration</text>
+  <text x="22" y="464" font-family="'Courier New',Courier,monospace" font-size="8" fill="#3a3a3a">agents</text>
+  <text x="22" y="568" font-family="'Courier New',Courier,monospace" font-size="8" fill="#3a3a3a">synthesis</text>
+  <text x="22" y="648" font-family="'Courier New',Courier,monospace" font-size="8" fill="#3a3a3a">ui</text>
+  <line x1="18" y1="260" x2="18" y2="670" stroke="#2a2a2a" stroke-width="0.5"/>
+</svg>

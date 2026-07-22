@@ -1,0 +1,191 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  AI Operations Brain — P-101 Knowledge Graph Diagram
+  Source: IMPLEMENTATION_PLAN.md Phase 2 — Knowledge Graph Nodes + Relationships
+  Theme: Industrial Dark (#0f0f0f / #f59e0b / #10b981)
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 620" width="1000" height="620">
+  <defs>
+    <marker id="arr" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+      <polygon points="0 0, 8 3, 0 6" fill="#555"/>
+    </marker>
+    <pattern id="dots" width="30" height="30" patternUnits="userSpaceOnUse">
+      <circle cx="1" cy="1" r="0.8" fill="#1d1d1d"/>
+    </pattern>
+    <!-- Glow filters -->
+    <filter id="glow-amber" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur stdDeviation="4" result="blur"/>
+      <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+
+  <!-- Background -->
+  <rect width="1000" height="620" fill="#0f0f0f"/>
+  <rect width="1000" height="620" fill="url(#dots)"/>
+
+  <!-- ─── TITLE ──────────────────────────────────────────────── -->
+  <text x="500" y="33" text-anchor="middle"
+        font-family="'Courier New',Courier,monospace" font-size="17" font-weight="bold"
+        fill="#f9f9f9" letter-spacing="3">P-101 KNOWLEDGE GRAPH</text>
+  <text x="500" y="51" text-anchor="middle"
+        font-family="'Courier New',Courier,monospace" font-size="9"
+        fill="#4b5563" letter-spacing="2">CRUDE OIL FEED PUMP — CDU UNIT 4 — ENTITY RELATIONSHIP MAP</text>
+  <line x1="180" y1="59" x2="820" y2="59" stroke="#2a2a2a" stroke-width="0.5"/>
+
+  <!-- ─── EDGES (drawn before nodes so nodes appear on top) ── -->
+
+  <!-- P-101 → Unit 4 CDU (INSTALLED_IN): (500,256)→(500,140) -->
+  <line x1="500" y1="256" x2="500" y2="140" stroke="#444" stroke-width="1.5" marker-end="url(#arr)"/>
+  <text x="510" y="205" font-family="'Courier New',Courier,monospace" font-size="8" fill="#525252">INSTALLED_IN</text>
+
+  <!-- P-101 → INC-2022-034 (EXPERIENCED): (539,280)→(720,184) -->
+  <line x1="539" y1="280" x2="720" y2="184" stroke="#444" stroke-width="1.5" marker-end="url(#arr)"/>
+  <text x="638" y="224" font-family="'Courier New',Courier,monospace" font-size="8" fill="#525252">EXPERIENCED</text>
+
+  <!-- P-101 → Rajesh Kumar (MAINTAINED_BY): (544,300)→(790,300) -->
+  <line x1="544" y1="300" x2="790" y2="300" stroke="#444" stroke-width="1.5" marker-end="url(#arr)"/>
+  <text x="642" y="294" font-family="'Courier New',Courier,monospace" font-size="8" fill="#525252">MAINTAINED_BY</text>
+
+  <!-- P-101 → P-202 (SIMILAR_TO): (533,329)→(695,470) -->
+  <line x1="533" y1="329" x2="695" y2="470" stroke="#444" stroke-width="1.5" marker-end="url(#arr)"/>
+  <text x="628" y="415" font-family="'Courier New',Courier,monospace" font-size="8" fill="#525252">SIMILAR_TO</text>
+
+  <!-- P-101 → OISD-117 (GOVERNED_BY): (500,344)→(500,480) -->
+  <line x1="500" y1="344" x2="500" y2="480" stroke="#444" stroke-width="1.5" marker-end="url(#arr)"/>
+  <text x="510" y="422" font-family="'Courier New',Courier,monospace" font-size="8" fill="#525252">GOVERNED_BY</text>
+
+  <!-- P-101 → Bearing 6311 (REQUIRES_SPARE): (467,329)→(305,470) -->
+  <line x1="467" y1="329" x2="305" y2="470" stroke="#444" stroke-width="1.5" marker-end="url(#arr)"/>
+  <text x="342" y="414" font-family="'Courier New',Courier,monospace" font-size="8" fill="#525252">REQUIRES_SPARE</text>
+
+  <!-- P-101 → MR-2026-012 (HAS_RECORD): (460,281)→(217,161) -->
+  <line x1="460" y1="281" x2="217" y2="161" stroke="#444" stroke-width="1.5" marker-end="url(#arr)"/>
+  <text x="299" y="213" font-family="'Courier New',Courier,monospace" font-size="8" fill="#525252">HAS_RECORD</text>
+
+  <!-- INC-2022-034 → OEM Manual (REFERENCED_IN): (777,147)→(849,91) -->
+  <line x1="777" y1="147" x2="849" y2="91" stroke="#3a3a3a" stroke-width="1.2" marker-end="url(#arr)"/>
+  <text x="790" y="118" font-family="'Courier New',Courier,monospace" font-size="8" fill="#3d3d3d">REFERENCED_IN</text>
+
+  <!-- INC-2022-034 → Bearing Assembly (ROOT_CAUSE): (774,192)→(873,290) -->
+  <line x1="774" y1="192" x2="873" y2="290" stroke="#3a3a3a" stroke-width="1.2" marker-end="url(#arr)"/>
+  <text x="840" y="243" font-family="'Courier New',Courier,monospace" font-size="8" fill="#3d3d3d">ROOT_CAUSE</text>
+
+  <!-- ─── NODES ──────────────────────────────────────────────── -->
+
+  <!-- P-101 CENTER NODE -->
+  <circle cx="500" cy="300" r="46" fill="#0f0f0f" stroke="#f59e0b" stroke-width="2.5" filter="url(#glow-amber)"/>
+  <circle cx="500" cy="300" r="46" fill="none" stroke="#f59e0b" stroke-width="12" opacity="0.05"/>
+  <text x="500" y="293" text-anchor="middle"
+        font-family="'Courier New',Courier,monospace" font-size="15" font-weight="bold"
+        fill="#f59e0b">P-101</text>
+  <text x="500" y="308" text-anchor="middle"
+        font-family="'Courier New',Courier,monospace" font-size="8" fill="#a0a0a0">Crude Oil</text>
+  <text x="500" y="320" text-anchor="middle"
+        font-family="'Courier New',Courier,monospace" font-size="8" fill="#a0a0a0">Feed Pump</text>
+
+  <!-- Unit 4 CDU (Location — teal) -->
+  <circle cx="500" cy="108" r="33" fill="#181818" stroke="#14b8a6" stroke-width="1.8"/>
+  <text x="500" y="103" text-anchor="middle"
+        font-family="'Courier New',Courier,monospace" font-size="9" font-weight="bold"
+        fill="#14b8a6">UNIT 4</text>
+  <text x="500" y="117" text-anchor="middle"
+        font-family="'Courier New',Courier,monospace" font-size="9" fill="#a0a0a0">CDU</text>
+
+  <!-- INC-2022-034 (Incident — red) -->
+  <circle cx="750" cy="168" r="36" fill="#181818" stroke="#ef4444" stroke-width="1.8"/>
+  <text x="750" y="160" text-anchor="middle"
+        font-family="'Courier New',Courier,monospace" font-size="8" font-weight="bold"
+        fill="#ef4444">INC-2022</text>
+  <text x="750" y="172" text-anchor="middle"
+        font-family="'Courier New',Courier,monospace" font-size="8" font-weight="bold"
+        fill="#ef4444">-034</text>
+  <text x="750" y="185" text-anchor="middle"
+        font-family="'Courier New',Courier,monospace" font-size="7" fill="#a0a0a0">Bearing Failure</text>
+
+  <!-- Rajesh Kumar (Person — blue) -->
+  <circle cx="820" cy="300" r="31" fill="#181818" stroke="#3b82f6" stroke-width="1.8"/>
+  <text x="820" y="295" text-anchor="middle"
+        font-family="'Courier New',Courier,monospace" font-size="8" font-weight="bold"
+        fill="#3b82f6">RAJESH</text>
+  <text x="820" y="308" text-anchor="middle"
+        font-family="'Courier New',Courier,monospace" font-size="8" fill="#a0a0a0">Kumar</text>
+
+  <!-- P-202 (Equipment — amber) -->
+  <circle cx="718" cy="490" r="30" fill="#181818" stroke="#f59e0b" stroke-width="1.5"/>
+  <text x="718" y="485" text-anchor="middle"
+        font-family="'Courier New',Courier,monospace" font-size="11" font-weight="bold"
+        fill="#f59e0b">P-202</text>
+  <text x="718" y="499" text-anchor="middle"
+        font-family="'Courier New',Courier,monospace" font-size="7" fill="#a0a0a0">Similar Pump</text>
+
+  <!-- OISD-117 (Regulation — green) -->
+  <circle cx="500" cy="510" r="31" fill="#181818" stroke="#10b981" stroke-width="1.8"/>
+  <text x="500" y="505" text-anchor="middle"
+        font-family="'Courier New',Courier,monospace" font-size="9" font-weight="bold"
+        fill="#10b981">OISD</text>
+  <text x="500" y="518" text-anchor="middle"
+        font-family="'Courier New',Courier,monospace" font-size="9" fill="#a0a0a0">-117</text>
+
+  <!-- Bearing 6311 (Spare Part — orange) -->
+  <circle cx="282" cy="490" r="31" fill="#181818" stroke="#f97316" stroke-width="1.8"/>
+  <text x="282" y="484" text-anchor="middle"
+        font-family="'Courier New',Courier,monospace" font-size="8" font-weight="bold"
+        fill="#f97316">BEARING</text>
+  <text x="282" y="496" text-anchor="middle"
+        font-family="'Courier New',Courier,monospace" font-size="8" font-weight="bold"
+        fill="#f97316">6311</text>
+  <text x="282" y="509" text-anchor="middle"
+        font-family="'Courier New',Courier,monospace" font-size="7" fill="#a0a0a0">Spare Part</text>
+
+  <!-- MR-2026-012 (Maintenance Record — purple) -->
+  <circle cx="190" cy="148" r="31" fill="#181818" stroke="#a855f7" stroke-width="1.8"/>
+  <text x="190" y="141" text-anchor="middle"
+        font-family="'Courier New',Courier,monospace" font-size="7" font-weight="bold"
+        fill="#a855f7">MR-2026</text>
+  <text x="190" y="152" text-anchor="middle"
+        font-family="'Courier New',Courier,monospace" font-size="7" font-weight="bold"
+        fill="#a855f7">-012</text>
+  <text x="190" y="165" text-anchor="middle"
+        font-family="'Courier New',Courier,monospace" font-size="7" fill="#a0a0a0">Maint Record</text>
+
+  <!-- OEM Manual (Document — sky, secondary) -->
+  <circle cx="872" cy="74" r="27" fill="#161616" stroke="#0ea5e9" stroke-width="1.5"/>
+  <text x="872" y="70" text-anchor="middle"
+        font-family="'Courier New',Courier,monospace" font-size="8" font-weight="bold"
+        fill="#0ea5e9">OEM</text>
+  <text x="872" y="83" text-anchor="middle"
+        font-family="'Courier New',Courier,monospace" font-size="7" fill="#a0a0a0">Manual</text>
+
+  <!-- Bearing Assembly (Component — pink, secondary) -->
+  <circle cx="896" cy="308" r="27" fill="#161616" stroke="#ec4899" stroke-width="1.5"/>
+  <text x="896" y="302" text-anchor="middle"
+        font-family="'Courier New',Courier,monospace" font-size="7" font-weight="bold"
+        fill="#ec4899">BEARING</text>
+  <text x="896" y="314" text-anchor="middle"
+        font-family="'Courier New',Courier,monospace" font-size="7" fill="#a0a0a0">Assembly</text>
+
+  <!-- ─── LEGEND ─────────────────────────────────────────────── -->
+  <rect x="28" y="490" width="136" height="116" rx="5"
+        fill="#161616" stroke="#2a2a2a" stroke-width="1"/>
+  <text x="96" y="507" text-anchor="middle"
+        font-family="'Courier New',Courier,monospace" font-size="8" font-weight="bold"
+        fill="#555" letter-spacing="1">LEGEND</text>
+
+  <circle cx="43" cy="521" r="5" fill="#181818" stroke="#f59e0b" stroke-width="1.5"/>
+  <text x="54" y="525" font-family="'Courier New',Courier,monospace" font-size="7" fill="#a0a0a0">Equipment</text>
+
+  <circle cx="43" cy="537" r="5" fill="#181818" stroke="#ef4444" stroke-width="1.5"/>
+  <text x="54" y="541" font-family="'Courier New',Courier,monospace" font-size="7" fill="#a0a0a0">Incident</text>
+
+  <circle cx="43" cy="553" r="5" fill="#181818" stroke="#a855f7" stroke-width="1.5"/>
+  <text x="54" y="557" font-family="'Courier New',Courier,monospace" font-size="7" fill="#a0a0a0">Maintenance</text>
+
+  <circle cx="43" cy="569" r="5" fill="#181818" stroke="#10b981" stroke-width="1.5"/>
+  <text x="54" y="573" font-family="'Courier New',Courier,monospace" font-size="7" fill="#a0a0a0">Regulation</text>
+
+  <circle cx="43" cy="585" r="5" fill="#181818" stroke="#3b82f6" stroke-width="1.5"/>
+  <text x="54" y="589" font-family="'Courier New',Courier,monospace" font-size="7" fill="#a0a0a0">Person</text>
+
+  <circle cx="43" cy="601" r="5" fill="#181818" stroke="#f97316" stroke-width="1.5"/>
+  <text x="54" y="605" font-family="'Courier New',Courier,monospace" font-size="7" fill="#a0a0a0">Spare Part</text>
+</svg>
