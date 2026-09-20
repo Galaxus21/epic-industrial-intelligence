@@ -1,0 +1,15 @@
+# EPIC — Development Docker Compose Overrides
+# This file is automatically merged with docker-compose.yml during local development
+# to enable source code bind mounts and live hot-reloading.
+
+services:
+  backend:
+    # uvicorn serves from source, so a bind mount gives live reload.
+    volumes:
+      - ./backend:/app
+    environment:
+      - ENVIRONMENT=development
+
+  # NOTE: the frontend is deliberately NOT bind-mounted. Its runner stage contains
+  # the compiled Next.js standalone output with server.js at the image root; mounting
+  # ./frontend over /app hides server.js and the container fails to start.
