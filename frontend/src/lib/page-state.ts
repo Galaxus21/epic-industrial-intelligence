@@ -9,7 +9,6 @@
  * WHAT IS PERSISTED (per page):
  *   query           — chat turns, selected equipment ID, draft input text
  *   sensors         — selected equipment ID
- *   audit           — tab, all filters (eqFilter, objType, actionFilter, days, relEq)
  *   documents       — selected document ID
  *
  * WHAT IS NOT PERSISTED (stays in local useState):
@@ -34,15 +33,6 @@ export interface SensorsSlice {
   equipmentId: string;
 }
 
-export interface AuditSlice {
-  tab: "log" | "relations";
-  objType: string;
-  eqFilter: string;
-  actionFilter: string;
-  days: number;
-  relEq: string;
-}
-
 export interface DocumentsSlice {
   selectedDocId: string | null;
 }
@@ -52,7 +42,6 @@ export interface DocumentsSlice {
 interface PageStateStore {
   query: QuerySlice;
   sensors: SensorsSlice;
-  audit: AuditSlice;
   documents: DocumentsSlice;
 
   // Shallow-merge updaters
@@ -60,7 +49,6 @@ interface PageStateStore {
   /** Supports both direct arrays and functional (prev => next) updaters for turns. */
   setQueryTurns: (updater: SessionTurn[] | ((prev: SessionTurn[]) => SessionTurn[])) => void;
   updateSensors: (patch: Partial<SensorsSlice>) => void;
-  updateAudit: (patch: Partial<AuditSlice>) => void;
   updateDocuments: (patch: Partial<DocumentsSlice>) => void;
 }
 
@@ -70,7 +58,6 @@ export const usePageState = create<PageStateStore>()((set) => ({
   // Initial values mirror the original useState defaults in each page
   query:              { turns: [], equipmentId: "", draft: "" },
   sensors:            { equipmentId: "" },
-  audit:              { tab: "log", objType: "", eqFilter: "", actionFilter: "", days: 30, relEq: "" },
   documents:          { selectedDocId: null },
 
   updateQuery: (patch) =>
@@ -86,9 +73,6 @@ export const usePageState = create<PageStateStore>()((set) => ({
 
   updateSensors: (patch) =>
     set((s) => ({ sensors: { ...s.sensors, ...patch } })),
-
-  updateAudit: (patch) =>
-    set((s) => ({ audit: { ...s.audit, ...patch } })),
 
   updateDocuments: (patch) =>
     set((s) => ({ documents: { ...s.documents, ...patch } })),

@@ -7,7 +7,7 @@
 
 import { useState, useRef, useEffect } from "react";
 import { useSearchParams } from "next/navigation";
-import { streamAgentQuery, listEquipment, getEquipment, createChecklist, createWorkOrder } from "@/lib/api";
+import { streamAgentQuery, listEquipment, getEquipment, createWorkOrder, errorText, ApiError } from "@/lib/api";
 import { AgentPanel } from "./AgentPanel";
 import { SynthesisPanel } from "./SynthesisPanel";
 import { WorkOrderCard } from "./WorkOrderCard";
@@ -21,15 +21,20 @@ import {
 import Link from "next/link";
 import clsx from "clsx";
 import { toast } from "sonner";
-import { formatSensorLabel, isSensorInAlarm, getSensorColor } from "@/lib/sensor-utils";
+import { formatSensorLabel, isAlarmStatus, statusColor } from "@/lib/sensorDisplay";
+import { accentClass, accentStyle } from "@/lib/accentStyle";
+import { buildQueryHistory, RESOLVING_LABEL } from "@/lib/queryHistory";
 
 function SensorStrip({ equipment, onQuery }: { equipment: Equipment; onQuery: (q: string) => void }) {
   const [expanded, setExpanded] = useState(false);
-  const readings = equipment.current_readings;
-  if (!readings || Object.keys(readings).length === 0) return null;
+  // A sensor declared at registration has no value until its first live reading: nothing to show or ask about yet.
+  const entries = Object.entries(equipment.current_readings ?? {}).flatMap(
+    ([key, reading]) => (reading.value === null ? [] : [[key, { ...reading, value: reading.value }] as const]),
+  );
+  if (entries.length === 0) return null;
 
-  const entries = Object.entries(readings) as [string, { value: number; unit: string; normal?: number; alarm?: number; trip?: number; alarm_direction?: string }][];
-  const alarmCount = entries.filter(([, r]) => isSensorInAlarm(r)).length;
+  const statuses = equipment.reading_status ?? {};
+  const alarmCount = entries.filter(([key]) => isAlarmStatus(statuses[key])).length;
 
   return (
     <div className="flex-shrink-0 border-b border-[#1e1e1e] bg-[#080808]">
@@ -50,8 +55,8 @@ function SensorStrip({ equipment, onQuery }: { equipment: Equipment; onQuery: (q
         </button>
 
         {entries.map(([key, r]) => {
-          const color = getSensorColor(r);
-          const isAlarm = isSensorInAlarm(r);
+          const color = statusColor(statuses[key]);
+          const isAlarm = isAlarmStatus(statuses[key]);
           return (
             <button
               key={key}
@@ -61,8 +66,8 @@ function SensorStrip({ equipment, onQuery }: { equipment: Equipment; onQuery: (q
             >
               <span className="w-2 h-2 rounded-full flex-shrink-0" style={{ background: color }} />
               <span className="text-[10px] text-[#8b949e] whitespace-nowrap">{formatSensorLabel(key)}</span>
-              <span className="text-xs font-mono font-semibold whitespace-nowrap" style={{ color }}>{r.value}</span>
-              <span className="text-[10px] text-[#555]">{r.unit}</span>
+              <span className={`text-xs font-mono font-semibold whitespace-nowrap ${accentClass}`} style={accentStyle(color)}>{r.value}</span>
+              <span className="text-[10px] text-[#6b7280]">{r.unit}</span>
             </button>
           );
         })}
@@ -72,11 +77,11 @@ function SensorStrip({ equipment, onQuery }: { equipment: Equipment; onQuery: (q
       {expanded && (
         <div className="px-4 pb-3 pt-1 grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-7 gap-2">
           {entries.map(([key, r]) => {
-            const color = getSensorColor(r);
+            const color = statusColor(statuses[key]);
             const max = r.trip ?? (r.alarm ? r.alarm * 1.5 : (r.normal ?? 10) * 2);
             const pct = Math.min(100, (r.value / max) * 100);
             const alarmPct = r.alarm ? (r.alarm / max) * 100 : null;
-            const isAlarm = isSensorInAlarm(r);
+            const isAlarm = isAlarmStatus(statuses[key]);
             return (
               <button
                 key={key}
@@ -88,8 +93,8 @@ function SensorStrip({ equipment, onQuery }: { equipment: Equipment; onQuery: (q
               >
                 <p className="text-[9px] text-[#8b949e] mb-1 truncate">{formatSensorLabel(key)}</p>
                 <div className="flex items-baseline gap-0.5">
-                  <span className="text-sm font-bold font-mono" style={{ color }}>{r.value}</span>
-                  <span className="text-[9px] text-[#333]">{r.unit}</span>
+                  <span className={`text-sm font-bold font-mono ${accentClass}`} style={accentStyle(color)}>{r.value}</span>
+                  <span className="text-[9px] text-[#6b7280]">{r.unit}</span>
                 </div>
                 <div className="relative h-0.5 bg-[#252525] rounded-full mt-1.5 overflow-hidden">
                   <div className="h-full rounded-full" style={{ width: `${pct}%`, background: color }} />
@@ -98,7 +103,7 @@ function SensorStrip({ equipment, onQuery }: { equipment: Equipment; onQuery: (q
                   )}
                 </div>
                 {r.alarm !== undefined && (
-                  <p className="text-[8px] text-[#2e2e2e] mt-0.5">alarm {r.alarm}</p>
+                  <p className="text-[8px] text-[#6b7280] mt-0.5">alarm {r.alarm}</p>
                 )}
               </button>
             );
@@ -428,22 +433,7 @@ function ProseResponse({
   );
 }
 
-function QuickChecklist({ result, equipmentId }: { result: SynthesisResult; equipmentId: string }) {
-  const [saving, setSaving] = useState(false);
-  const [savedId, setSavedId] = useState<string | null>(null);
-  const handleSave = async () => {
-    setSaving(true);
-    try {
-      const cl = await createChecklist({
-        equipment_id: equipmentId, query_text: result.risk_summary,
-        risk_level: result.risk_level, items: result.inspection_checklist,
-      });
-      setSavedId(cl.id);
-      toast.success("Checklist saved");
-    } catch (err: any) {
-      toast.error(err?.status === 403 ? "Your role cannot do this" : (err?.message || "Failed to save checklist"));
-    } finally { setSaving(false); }
-  };
+function QuickChecklist({ result }: { result: SynthesisResult }) {
   return (
     <div className="bg-[#161616] border border-[#1e1e1e] rounded-2xl p-4">
       <div className="flex items-center justify-between mb-3">
@@ -452,17 +442,6 @@ function QuickChecklist({ result, equipmentId }: { result: SynthesisResult; equi
           <span className="text-xs font-semibold text-[#a0a0a0]">Inspection Checklist</span>
           <span className="text-xs text-[#6b7280]">{result.inspection_checklist.length} items</span>
         </div>
-        {savedId ? (
-          <a href="/work-orders?tab=checklists" className="text-xs text-emerald-400 hover:underline flex items-center gap-1">
-            <CheckCircle2 size={11} /> Saved · {savedId}
-          </a>
-        ) : (
-          <button onClick={handleSave} disabled={saving || result.ai_available === false}
-            className="flex items-center gap-1 text-xs text-blue-400 hover:text-blue-300 disabled:opacity-50 transition-colors">
-            {saving ? <Loader2 size={11} className="animate-spin" /> : <Save size={11} />}
-            Save Checklist
-          </button>
-        )}
       </div>
       <div className="grid grid-cols-1 md:grid-cols-2 gap-1">
         {result.inspection_checklist.map((item, i) => (
@@ -496,8 +475,8 @@ function QuickWorkOrder({ result, equipmentId }: { result: SynthesisResult; equi
       });
       setSavedId(saved.id);
       toast.success("Work order saved");
-    } catch (err: any) {
-      toast.error(err?.status === 403 ? "Your role cannot do this" : (err?.message || "Failed to save work order"));
+    } catch (err) {
+      toast.error(errorText(err, "Failed to save work order"));
     } finally { setSaving(false); }
   };
   if (!wo || result.ai_available === false) return null;
@@ -547,7 +526,7 @@ function TurnView({ turn }: { turn: SessionTurn }) {
         <div className="max-w-2xl">
           <div className="flex items-center justify-end gap-2 mb-1">
             <span className="text-[10px] font-mono text-[#6b7280]">
-              {turn.equipmentId && turn.equipmentId !== "Resolving…" ? turn.equipmentId : turn.isRunning ? "Resolving asset…" : "Plant-wide"}
+              {turn.equipmentId && turn.equipmentId !== RESOLVING_LABEL ? turn.equipmentId : turn.isRunning ? "Resolving asset…" : "Plant-wide"}
             </span>
           </div>
           <div className="bg-amber-500/15 border border-amber-500/25 rounded-2xl rounded-tr-md px-4 py-2.5">
@@ -603,7 +582,7 @@ function TurnView({ turn }: { turn: SessionTurn }) {
                 />
 
                 {showCL && turn.synthesis.inspection_checklist.length > 0 && (
-                  <QuickChecklist result={turn.synthesis} equipmentId={turn.equipmentId} />
+                  <QuickChecklist result={turn.synthesis} />
                 )}
 
                 {showWO && turn.synthesis.work_order && (
@@ -657,7 +636,7 @@ export function QueryInterface() {
 
     listEquipment().catch(() => [] as Equipment[]).then(list => {
       if (!isMounted) return;
-      setEquipmentList(list.filter(e => !e._discovered));
+      setEquipmentList(list.filter(e => !e.discovered));
     });
 
     return () => {
@@ -696,18 +675,6 @@ export function QueryInterface() {
     chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [turns]);
 
-  /** Build history from last 4 turns for context threading */
-  const buildHistory = (): Array<{ role: string; content: string }> =>
-    turns.slice(-4).flatMap(t => [
-      { role: "user", content: `[${t.equipmentId}] ${t.query}` },
-      ...(t.synthesis
-        ? [{
-            role: "assistant" as const,
-            content: `${t.synthesis.risk_level} risk — ${t.synthesis.risk_summary} ${t.synthesis.explanation ?? ""}`.trim(),
-          }]
-        : []),
-    ]);
-
   const handleSubmit = async () => {
     const text = query.trim();
     if (!text || globalRunning) return;
@@ -719,7 +686,7 @@ export function QueryInterface() {
     activeStreamAbortRef.current = streamController;
 
     const turnId  = `turn-${Date.now()}`;
-    const history = buildHistory();
+    const history = buildQueryHistory(turns);
     const eq = equipmentId;
 
     setQuery("");
@@ -727,7 +694,7 @@ export function QueryInterface() {
     const t0 = Date.now();
 
     const newTurn: SessionTurn = {
-      id: turnId, equipmentId: eq || "Resolving…", query: text,
+      id: turnId, equipmentId: eq || RESOLVING_LABEL, query: text,
       agentEvents: [], synthesis: null, elapsed: null, isRunning: true,
     };
     setTurns(prev => [...prev, newTurn]);
@@ -756,17 +723,17 @@ export function QueryInterface() {
           const eventData = event.data as { resolved_equipment_id?: string; scope?: string } | undefined;
           if (eventData?.resolved_equipment_id) {
             currentEqId = eventData.resolved_equipment_id;
-          } else if (eventData?.scope === "plant_wide" && (currentEqId === "Resolving…" || currentEqId === "__all_equipment__" || !currentEqId)) {
+          } else if (eventData?.scope === "plant_wide" && (currentEqId === RESOLVING_LABEL || currentEqId === "__all_equipment__" || !currentEqId)) {
             currentEqId = "Plant-wide";
           }
 
           return { ...t, equipmentId: currentEqId, agentEvents: events, synthesis: syn };
         });
       }
-    } catch (err: any) {
+    } catch (err) {
       if (!streamController.signal.aborted) {
-        const errorMsg = err?.message || String(err) || "Stream interrupted";
-        const isAuthError = errorMsg.includes("401") || errorMsg.includes("Not authenticated");
+        const errorMsg = errorText(err, "Stream interrupted");
+        const isAuthError = err instanceof ApiError && err.status === 401;
         update(t => ({
           ...t,
           isRunning: false,
@@ -833,15 +800,10 @@ export function QueryInterface() {
         <div className="flex items-center gap-2.5 px-3 sm:px-5 py-2.5">
           <BrainCircuit size={18} className="text-amber-400 flex-shrink-0" />
           <div className="flex-1 min-w-0">
-            <div className="flex items-center gap-2">
-              <p className="text-sm font-semibold text-[#f9f9f9] leading-none">EPIC Field Companion</p>
-              <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-500/15 border border-amber-500/30 text-amber-300 font-mono">
-                PWA
-              </span>
-            </div>
+            <p className="text-sm font-semibold text-[#f9f9f9] leading-none">EPIC Plant Assistant</p>
             <p className="text-[10px] text-[#4b5563] mt-0.5 truncate">
               {turns.length === 0
-                ? "5 specialized agents · mobile-ready plant diagnostics"
+                ? "5 specialist retrievers · one answer that cites its evidence"
                 : `${turns.length} turn${turns.length !== 1 ? "s" : ""} · session active`}
             </p>
           </div>
@@ -864,6 +826,7 @@ export function QueryInterface() {
             <select
               value={equipmentId}
               onChange={e => setEquipmentId(e.target.value)}
+              aria-label="Equipment to ask about"
               className="w-full sm:w-auto min-h-[44px] bg-[#1a1a1a] border border-[#2a2a2a] rounded-xl pl-3.5 pr-8 py-2.5 text-xs text-[#f9f9f9] appearance-none focus:outline-none focus:border-amber-500/50"
             >
               <option value="">Auto-resolve / Plant-wide</option>
@@ -946,6 +909,7 @@ export function QueryInterface() {
           <textarea
             ref={inputRef}
             value={query}
+            aria-label="Question"
             onChange={e => setQuery(e.target.value)}
             onKeyDown={handleKeyDown}
             placeholder={globalRunning ? "Agents are processing…" : "Ask a question or describe a symptom…"}

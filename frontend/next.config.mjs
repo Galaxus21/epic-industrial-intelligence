@@ -1,6 +1,16 @@
 /** @type {import('next').NextConfig} */
+
+// The rewrite proxy aborts a backend request after this long without data (default 30 s in next 14.2.5,
+// server/lib/router-utils/proxy-request.js) and leaves the browser waiting. Streams send heartbeats
+// (backend/app/api/eventStream.py); a plain JSON model reply sends nothing until it is done, so the limit must sit
+// above the longest one, modelReplyTimeoutMs (6 min) in src/lib/api.ts.
+const proxyTimeoutMs = 7 * 60 * 1000;
+
 const nextConfig = {
   output: "standalone",
+  experimental: {
+    proxyTimeout: proxyTimeoutMs,
+  },
   async rewrites() {
     // next.config is evaluated at BUILD time inside Docker.
     // INTERNAL_API_URL from docker-compose environment is runtime-only, so

@@ -7,12 +7,15 @@
 "use client";
 
 import { useEffect, useState, useRef } from "react";
-import { listDocuments, uploadDocument, checkDuplicateDocument, deleteDocument } from "@/lib/api";
-import type { Document } from "@/lib/types";
+import { listDocuments, uploadDocument, checkDuplicateDocument, deleteDocument, errorText } from "@/lib/api";
+import type { Document, PipelineStepStatus } from "@/lib/types";
 import { Badge } from "@/components/ui/Badge";
 import { DocumentModal } from "@/components/ui/DocumentModal";
 import { CreateDocumentModal } from "@/components/ui/CreateDocumentModal";
+import { HeldEntitiesNotice } from "@/components/ui/HeldEntitiesNotice";
 import { usePageState } from "@/lib/page-state";
+import { approverRoles, hasRole } from "@/lib/roles";
+import { useCurrentUser } from "@/lib/user-context";
 import {
   FileText, Upload, CheckCircle2, Loader2, AlertCircle,
   ChevronDown, ChevronUp, Network, Tag, BookOpen, Trash2, FilePlus,
@@ -36,12 +39,12 @@ const TYPE_BADGE: Record<string, "info" | "success" | "warning" | "muted" | "hig
   other: "muted",
 };
 
-const PIPELINE_STEPS: { key: string; label: string; description: string }[] = [
+const PIPELINE_STEPS: { key: string; label: string; description: string; skippedLabel?: string }[] = [
   { key: "saved",     label: "File Saved",              description: "Written to storage" },
   { key: "extracted", label: "Text Extracted",           description: "OCR / parser ran" },
   { key: "entities",  label: "Entities Extracted",       description: "LLM identifies equipment, people, regulations" },
   { key: "graph",     label: "Knowledge Graph Updated",  description: "New nodes linked to equipment" },
-  { key: "indexed",   label: "Vector Index Updated",     description: "Ready for semantic search" },
+  { key: "indexed",   label: "Vector Index Updated",     description: "Ready for semantic search", skippedLabel: "Vector Index Skipped" },
 ];
 
 interface UploadedDoc {
@@ -50,7 +53,8 @@ interface UploadedDoc {
   type: string;
   status: "processing" | "processed" | "failed";
   current_step: string;
-  steps: Record<string, "pending" | "done">;
+  steps: Record<string, PipelineStepStatus>;
+  step_detail?: string;
   entities: null | {
     equipment_ids: string[];
     incident_ids: string[];
@@ -65,6 +69,8 @@ interface UploadedDoc {
   char_count?: number;
   entities_pending_review?: boolean;
   pending_review_note?: string | null;
+  held_entities?: string[];
+  unresolved_equipment_ids?: string[];
 }
 
 // ── Component: live pipeline progress card ───────────────────────────────────
@@ -106,9 +112,10 @@ function PipelineCard({ doc, onView }: { doc: UploadedDoc; onView: () => void })
       <div className="flex items-center gap-1 mb-3 overflow-x-auto pb-1">
         {PIPELINE_STEPS.map((step, i) => {
           const stepStatus = doc.steps?.[step.key] ?? "pending";
+          const isSkipped = stepStatus === "skipped";
           const isActive = doc.current_step === step.key && !isDone;
           return (
-            <div key={step.key} className="flex items-center gap-1 flex-shrink-0">
+            <div key={step.key} className="flex items-center gap-1 flex-shrink-0" title={isSkipped ? doc.step_detail : undefined}>
               <div className="flex flex-col items-center">
                 <div className={clsx(
                   "w-6 h-6 rounded-full flex items-center justify-center text-xs font-bold transition-all",
@@ -116,14 +123,14 @@ function PipelineCard({ doc, onView }: { doc: UploadedDoc; onView: () => void })
                   isActive             ? "bg-amber-500/20 text-amber-400 border border-amber-500/40 animate-pulse" :
                                          "bg-[#2a2a2a] text-[#4b5563] border border-[#333]",
                 )}>
-                  {stepStatus === "done" ? "✓" : isActive ? <Loader2 size={10} className="animate-spin" /> : i + 1}
+                  {stepStatus === "done" ? "✓" : isSkipped ? "–" : isActive ? <Loader2 size={10} className="animate-spin" /> : i + 1}
                 </div>
                 <p className={clsx(
                   "text-xs mt-1 text-center w-14 leading-tight",
                   stepStatus === "done" ? "text-emerald-400" :
                   isActive             ? "text-amber-400" :
-                                         "text-[#4b5563]",
-                )}>{step.label}</p>
+                                         "text-[#6b7280]",
+                )}>{isSkipped ? step.skippedLabel ?? "Skipped" : step.label}</p>
               </div>
               {i < PIPELINE_STEPS.length - 1 && (
                 <div className={clsx(
@@ -153,15 +160,7 @@ function PipelineCard({ doc, onView }: { doc: UploadedDoc; onView: () => void })
 
           {showEntities && (
             <div className="mt-3 space-y-2">
-              {(doc.entities_pending_review || doc.pending_review_note) && (
-                <div className="flex items-start gap-2 p-2 bg-amber-500/10 border border-amber-500/30 rounded text-xs text-amber-300">
-                  <AlertCircle size={14} className="flex-shrink-0 mt-0.5 text-amber-400" />
-                  <div>
-                    <span className="font-semibold text-amber-400">Entities held for review: </span>
-                    <span>{doc.pending_review_note || "Extracted entities held for manual review."}</span>
-                  </div>
-                </div>
-              )}
+              <HeldEntitiesNotice doc={doc} />
               {doc.entities.summary && (
                 <p className="text-xs text-[#a0a0a0] italic bg-[#1a1a1a] rounded p-2 border border-[#2a2a2a]">
                   {doc.entities.summary}
@@ -226,6 +225,8 @@ export default function DocumentsPage() {
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [delDocLoading, setDelDocLoading] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
+  const { currentUser } = useCurrentUser();
+  const canDelete = hasRole(currentUser?.role, approverRoles);
   const pollRefs = useRef<Map<string, ReturnType<typeof setInterval>>>(new Map());
 
   const loadDocs = () => listDocuments().then(setDocs).catch(console.error);
@@ -277,8 +278,8 @@ export default function DocumentsPage() {
       setProcessing(prev => [initial, ...prev]);
       pollDocument(doc_id);
       toast.info(`${file.name} — pipeline started`);
-    } catch {
-      toast.error("Upload failed");
+    } catch (err) {
+      toast.error(errorText(err, "Upload failed"));
     } finally {
       setUploading(false);
     }
@@ -297,8 +298,8 @@ export default function DocumentsPage() {
       setDeletingDocId(null);
       toast.success("Document and graph nodes removed");
       loadDocs();
-    } catch {
-      toast.error("Delete failed");
+    } catch (err) {
+      toast.error(errorText(err, "Delete failed"));
     } finally {
       setDelDocLoading(false);
     }
@@ -313,7 +314,7 @@ export default function DocumentsPage() {
         <div className="min-w-0">
           <h1 className="text-xl font-bold text-[#f9f9f9]">Document Intelligence</h1>
           <p className="text-sm text-[#6b7280] mt-1">
-            Upload any document — PDF, CAD drawing, inspection report, SOP, XLSX. Or create new documents with AI assistance.
+            Upload inspection reports, SOPs, incident reports and shift logs (PDF, DOCX, XLSX, PPTX, TXT, CSV, JSON), or create new documents with AI assistance.
           </p>
         </div>
         <button
@@ -337,10 +338,9 @@ export default function DocumentsPage() {
         )}
       >
         {uploading ? <Loader2 size={32} className="text-amber-500 animate-spin" /> : <Upload size={32} className="text-[#4b5563]" />}
-        <p className="text-sm text-[#a0a0a0]">{uploading ? "Uploading…" : "Drop files here, or click to browse"}</p>
-        <p className="text-xs text-[#6b7280]">PDF, PNG, JPG, TIFF, WEBP, XLSX, DOCX, TXT, JSON, PPTX · CAD: DXF, DWG, STEP, IGES — max 50 MB</p>
+        <p className="text-xs text-[#6b7280]">PDF, DOCX, XLSX, PPTX, TXT, CSV, JSON — max 50 MB</p>
         <input ref={inputRef} type="file" className="hidden" multiple
-          accept=".pdf,.png,.jpg,.jpeg,.ppm,.bmp,.tiff,.tif,.gif,.webp,.xlsx,.docx,.txt,.csv,.json,.pptx,.dxf,.dwg,.step,.stp,.iges,.igs"
+          accept=".pdf,.docx,.xlsx,.pptx,.txt,.csv,.json"
           onChange={e => Array.from(e.target.files ?? []).forEach(f => handleUpload(f))} />
       </div>
 
@@ -455,16 +455,17 @@ export default function DocumentsPage() {
                   </button>
                   <button
                     onClick={() => setDeletingDocId(null)}
-                    className="px-2 py-1 text-xs bg-[#2a2a2a] hover:bg-[#333] text-[#6b7280] rounded border border-[#333] transition-colors"
+                    className="px-2 py-1 text-xs bg-[#2a2a2a] hover:bg-[#333] text-[#9ca3af] rounded border border-[#333] transition-colors"
                   >
                     Cancel
                   </button>
                 </div>
-              ) : (
+              ) : canDelete && (
                 <button
                   onClick={() => setDeletingDocId(doc.id)}
                   className="flex-shrink-0 p-1.5 text-[#4b5563] hover:text-red-400 hover:bg-red-500/10 rounded transition-colors opacity-0 group-hover:opacity-100"
                   title="Delete document and graph nodes"
+                  aria-label={`Delete ${doc.name}`}
                 >
                   <Trash2 size={13} />
                 </button>

@@ -8,6 +8,7 @@ import { listEquipment } from "@/lib/api";
 import { Badge } from "@/components/ui/Badge";
 import { AlertTriangle, BrainCircuit, Activity, HardDrive } from "lucide-react";
 import type { Equipment } from "@/lib/types";
+import { accentClass, accentStyle } from "@/lib/accentStyle";
 
 export const dynamic = "force-dynamic";
 
@@ -45,7 +46,7 @@ function EquipmentRow({ eq }: { eq: Equipment }) {
                 style={{ width: `${eq.health_score}%`, background: hc }}
               />
             </div>
-            <span className="text-[10px] font-mono" style={{ color: hc }}>{eq.health_score}%</span>
+            <span className={`text-[10px] font-mono ${accentClass}`} style={accentStyle(hc)}>{eq.health_score}%</span>
           </div>
         )}
         <Badge variant={

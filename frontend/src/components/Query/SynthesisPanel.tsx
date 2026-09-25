@@ -1,6 +1,6 @@
 /**
  * AI Operations Brain — Synthesis Panel
- * Renders the GPT-4.1 synthesized result: risk, causes, actions, checklist,
+ * Renders the model's synthesized result (OpenAI or a local Ollama model): risk, causes, actions, checklist,
  * lessons learned, compliance, work order, and sources with attribution.
  */
 "use client";
@@ -10,7 +10,8 @@ import type { SynthesisResult, QuerySourceType } from "@/lib/types";
 import { Badge } from "@/components/ui/Badge";
 import { DocumentModal } from "@/components/ui/DocumentModal";
 import { WorkOrderCard } from "@/components/Query/WorkOrderCard";
-import { createChecklist, createWorkOrder } from "@/lib/api";
+import { createWorkOrder, errorText } from "@/lib/api";
+import { accentClass, accentStyle } from "@/lib/accentStyle";
 import { toast } from "sonner";
 import {
   AlertTriangle, CheckCircle2, ClipboardList, History, ShieldCheck,
@@ -71,10 +72,19 @@ const SOURCE_CONFIG: Record<QuerySourceType, {
     text: "text-blue-400",
     clickable: false,
   },
+  compliance_record: {
+    label: "Compliance Record",
+    icon: <ShieldCheck size={11} />,
+    badge: "bg-teal-500/15 text-teal-400 border-teal-500/30",
+    bg: "bg-teal-500/5",
+    border: "border-teal-500/20",
+    text: "text-teal-400",
+    clickable: false,
+  },
   ai_inference: {
     label: "AI Inference",
     icon: <Cpu size={11} />,
-    badge: "bg-[#2a2a2a] text-[#6b7280] border-[#333]",
+    badge: "bg-[#2a2a2a] text-[#9ca3af] border-[#333]",
     bg: "bg-[#1a1a1a]",
     border: "border-[#2a2a2a]",
     text: "text-[#6b7280]",
@@ -148,36 +158,10 @@ function RevealSection({ delay, children }: { delay: number; children: React.Rea
 export function SynthesisPanel({ result, equipmentId }: SynthesisPanelProps) {
   const riskCfg = RISK_CONFIG[result.risk_level] ?? RISK_CONFIG.Medium;
   const [selectedDocId, setSelectedDocId] = useState<string | null>(null);
-  const [savingCL, setSavingCL] = useState(false);
-  const [savedCLId, setSavedCLId] = useState<string | null>(null);
   const [savingWO, setSavingWO] = useState(false);
   const [savedWOId, setSavedWOId] = useState<string | null>(null);
   const riskSummary  = useTypewriter(result.risk_summary, 5);
   const isTyping     = riskSummary.length < result.risk_summary.length;
-
-  const handleSaveChecklist = async () => {
-    if (result.ai_available === false) {
-      toast.error("Cannot save checklist generated in degraded mode");
-      return;
-    }
-    if (result.inspection_checklist.length === 0) return;
-    setSavingCL(true);
-    try {
-      const cl = await createChecklist({
-        equipment_id: equipmentId,
-        query_text: result.risk_summary,
-        risk_level: result.risk_level,
-        items: result.inspection_checklist,
-      });
-      setSavedCLId(cl.id);
-      toast.success("Checklist saved");
-    } catch (err: unknown) {
-      const apiErr = err as { status?: number; message?: string };
-      toast.error(apiErr?.status === 403 ? "Your role cannot do this" : (apiErr?.message || "Failed to save checklist"));
-    } finally {
-      setSavingCL(false);
-    }
-  };
 
   const handleSaveWorkOrder = async () => {
     if (result.ai_available === false) {
@@ -202,9 +186,8 @@ export function SynthesisPanel({ result, equipmentId }: SynthesisPanelProps) {
       });
       setSavedWOId(wo.id);
       toast.success("Work order saved");
-    } catch (err: unknown) {
-      const apiErr = err as { status?: number; message?: string };
-      toast.error(apiErr?.status === 403 ? "Your role cannot do this" : (apiErr?.message || "Failed to save work order"));
+    } catch (err) {
+      toast.error(errorText(err, "Failed to save work order"));
     } finally {
       setSavingWO(false);
     }
@@ -255,8 +238,8 @@ export function SynthesisPanel({ result, equipmentId }: SynthesisPanelProps) {
             <div key={i} className="flex items-start gap-3 py-2 border-b border-[#2a2a2a] last:border-0">
               <div className="flex-shrink-0 w-10 text-center">
                 <span
-                  className="text-sm font-bold"
-                  style={{ color: cause.probability >= 60 ? "#f97316" : "#f59e0b" }}
+                  className={`text-sm font-bold ${accentClass}`}
+                  style={accentStyle(cause.probability >= 60 ? "#f97316" : "#f59e0b")}
                   title={`Probability: ${cause.probability}% — likelihood this is the root cause based on available evidence`}
                 >
                   {cause.probability}%
@@ -346,25 +329,6 @@ export function SynthesisPanel({ result, equipmentId }: SynthesisPanelProps) {
         <Section
           icon={<ClipboardList size={14} className="text-blue-400" />}
           title="Inspection Checklist"
-          action={
-            result.ai_available === false ? (
-              <span className="text-xs text-[#6b7280]">AI unavailable</span>
-            ) : savedCLId ? (
-              <a href="/work-orders?tab=checklists" className="text-xs text-emerald-400 hover:underline flex items-center gap-1">
-                <CheckCircle2 size={11} /> Saved · {savedCLId}
-              </a>
-            ) : (
-              <button
-                onClick={handleSaveChecklist}
-                disabled={savingCL}
-                className="flex items-center gap-1 text-xs text-blue-400 hover:text-blue-300 transition-colors disabled:opacity-50"
-                title="Save this checklist to Work Orders so a technician can execute it step by step"
-              >
-                {savingCL ? <Loader2 size={11} className="animate-spin" /> : <Save size={11} />}
-                Save to Work Orders
-              </button>
-            )
-          }
         >
           <div className="grid grid-cols-1 md:grid-cols-2 gap-1">
             {result.inspection_checklist.map((item, i) => (
@@ -416,7 +380,7 @@ export function SynthesisPanel({ result, equipmentId }: SynthesisPanelProps) {
         <Section icon={<BookOpen size={14} className="text-[#6b7280]" />} title="Evidence Sources">
           {/* Group summary bar */}
           <div className="flex flex-wrap gap-2 mb-3 pb-3 border-b border-[#2a2a2a]">
-            {(["uploaded_doc", "knowledge_base", "incident_history", "maintenance_record", "ai_inference", "feedback"] as QuerySourceType[]).map(type => {
+            {(Object.keys(SOURCE_CONFIG) as QuerySourceType[]).map(type => {
               const count = result.sources.filter(s => (s.source_type ?? "knowledge_base") === type).length;
               if (count === 0) return null;
               const cfg = SOURCE_CONFIG[type] ?? SOURCE_CONFIG.knowledge_base;
@@ -482,7 +446,7 @@ export function SynthesisPanel({ result, equipmentId }: SynthesisPanelProps) {
                         "text-xs font-bold px-1.5 py-0.5 rounded",
                         source.confidence >= 85 ? "bg-emerald-500/20 text-emerald-400" :
                         source.confidence >= 65 ? "bg-amber-500/20 text-amber-400" :
-                                                 "bg-[#2a2a2a] text-[#6b7280]",
+                                                 "bg-[#2a2a2a] text-[#9ca3af]",
                       )}
                       title={`AI confidence: ${source.confidence}% — how relevant this source is to the current query`}
                     >

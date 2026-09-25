@@ -71,7 +71,6 @@ export const THEME = {
     work_order: "#a855f7",
     feedback: "#10b981",
     lesson: "#3b82f6",
-    checklist: "#14b8a6",
     inspection_report: "#06b6d4",
     defect: "#f97316",
     document: "#8b5cf6",

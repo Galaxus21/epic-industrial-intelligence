@@ -1,7 +1,7 @@
 /**
  * EPIC — Sidebar Navigation
  * • Theme toggle (sun / moon), stored in localStorage
- * • "Acting as" user picker — replaces all hardcoded reviewer names
+ * • The signed-in user (from the session cookie) and Sign out
  * • Delete All modal — purge any entity type the backend allows (equipment, sensors, documents, …)
  *   with a "Delete Everything" shortcut
  */
@@ -11,16 +11,19 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useState } from "react";
 import {
-  LayoutDashboard, BrainCircuit, Network, FileText, ShieldCheck,
-  Zap, ClipboardCheck, GitBranch, Activity,
-  Wrench, AlertTriangle, Users,
-  History, Sun, Moon, Trash2, X,
-  ChevronDown, Loader2, AlertCircle, CheckCircle2,
-  HardDrive, Settings, Database, Menu, Sparkles, LogOut,
+  LayoutDashboard, BrainCircuit, Network, FileText,
+  Zap, ClipboardCheck, Activity,
+  Wrench,
+  Sun, Moon, Trash2, X,
+  Loader2, AlertCircle, CheckCircle2,
+  HardDrive, Menu, Sparkles, LogOut,
 } from "lucide-react";
 import clsx from "clsx";
 import { useTheme } from "@/lib/theme-context";
-import { useCurrentUser, ROLE_LABEL } from "@/lib/user-context";
+import { useCurrentUser } from "@/lib/user-context";
+import { forbiddenMessage } from "@/lib/api";
+import { adminRoles, hasRole, roleLabel } from "@/lib/roles";
+import { useDialogFocus } from "@/lib/useDialogFocus";
 
 // ─── Nav items ────────────────────────────────────────────────────────────────
 
@@ -29,135 +32,42 @@ const NAV_ITEMS = [
   { href: "/query",         icon: BrainCircuit,    label: "AI Query" },
   { href: "/equipment",     icon: HardDrive,       label: "Equipment" },
   { href: "/sensors",       icon: Activity,         label: "Sensors" },
-  { href: "/rca",           icon: GitBranch,       label: "Root Cause" },
-  { href: "/audit",         icon: History,          label: "Audit Log" },
   { href: "/graph",         icon: Network,          label: "Knowledge Graph" },
   { href: "/documents",     icon: FileText,         label: "Documents" },
   { href: "/work-orders",   icon: ClipboardCheck,   label: "Work Orders" },
   { href: "/maintenance",   icon: Wrench,            label: "Maintenance Logs" },
 ] as const;
 
-// ─── Delete-All entity catalogue ─────────────────────────────────────────────
-// Keys must match _ENTITY_MAP in backend/app/api/admin.py. audit_logs is absent on
-// purpose: the backend refuses to purge the audit trail.
-
-const ENTITY_GROUPS = [
-  {
-    group: "Assets & Equipment",
-    icon: HardDrive,
-    color: "text-blue-400",
-    entities: [
-      { key: "equipment",    label: "Equipment",          icon: HardDrive },
-      { key: "maintenance",  label: "Maintenance Records", icon: Wrench },
-      { key: "sensors",      label: "Sensor History",      icon: Activity },
-      { key: "spare_parts",  label: "Spare Parts",         icon: Settings },
-      { key: "technicians",  label: "Technicians",         icon: Users },
-    ],
-  },
-  {
-    group: "Operations",
-    icon: ClipboardCheck,
-    color: "text-emerald-400",
-    entities: [
-      { key: "incidents",         label: "Incidents",         icon: AlertTriangle },
-      { key: "saved_checklists",  label: "Saved Checklists",  icon: ClipboardCheck },
-      { key: "saved_work_orders", label: "Saved Work Orders", icon: ClipboardCheck },
-    ],
-  },
-  {
-    group: "System",
-    icon: Database,
-    color: "text-purple-400",
-    entities: [
-      { key: "documents",   label: "Documents",        icon: FileText },
-      { key: "graph",       label: "Knowledge Graph",  icon: Network },
-      { key: "compliance",  label: "Compliance",       icon: ShieldCheck },
-    ],
-  },
-] as const;
-
-type EntityKey = string;
-
 // ─── Delete-All modal ─────────────────────────────────────────────────────────
 
 function DeleteAllModal({ onClose }: { onClose: () => void }) {
-  const [selected, setSelected] = useState<Set<EntityKey>>(new Set());
-  const [stats, setStats]       = useState<Record<string, number>>({});
-  const [loadingStats, setLoadingStats] = useState(true);
   const [deleting, setDeleting] = useState(false);
-  const [result, setResult]     = useState<{ success: string[]; errors: string[] } | null>(null);
+  const [result, setResult]     = useState<{ success: boolean; error?: string } | null>(null);
 
-  // Fetch live record counts
-  useEffect(() => {
-    fetch("/api/v1/admin/stats")
-      .then(r => r.ok ? r.json() : {})
-      .then(setStats)
-      .catch(() => {})
-      .finally(() => setLoadingStats(false));
-  }, []);
+  const dialogRef = useDialogFocus<HTMLDivElement>(onClose);
 
-  const allKeys = ENTITY_GROUPS.flatMap(g => g.entities.map(e => e.key));
-
-  const toggle = (k: EntityKey) =>
-    setSelected(s => { const n = new Set(s); n.has(k) ? n.delete(k) : n.add(k); return n; });
-
-  const toggleGroup = (keys: readonly string[]) => {
-    const allIn = keys.every(k => selected.has(k));
-    setSelected(s => {
-      const n = new Set(s);
-      if (allIn) keys.forEach(k => n.delete(k));
-      else        keys.forEach(k => n.add(k));
-      return n;
-    });
-  };
-
-  const selectAll  = () => setSelected(new Set(allKeys));
-  const clearAll   = () => setSelected(new Set());
-  const allSelected = allKeys.every(k => selected.has(k));
-
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
-    };
-    window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [onClose]);
-
-  const purge = async () => {
-    if (selected.size === 0) return;
-    setDeleting(true); setResult(null);
-    const success: string[] = [];
-    const errors:  string[] = [];
-    let forbidden = false;
-
-    // If all selected use the single "all" endpoint
-    if (allSelected) {
-      try {
-        const res = await fetch("/api/v1/admin/purge?entity=all", { method: "DELETE" });
-        if (res.status === 403) forbidden = true;
-        else if (res.ok) success.push(...allKeys);
-        else        errors.push("all");
-      } catch { errors.push("all"); }
-    } else {
-      for (const key of Array.from(selected)) {
-        try {
-          const res = await fetch(`/api/v1/admin/purge?entity=${key}`, { method: "DELETE" });
-          if (res.status === 403) forbidden = true;
-          else if (res.ok) success.push(key);
-          else        errors.push(key);
-        } catch { errors.push(key); }
+  const purgeAll = async () => {
+    setDeleting(true);
+    setResult(null);
+    try {
+      const res = await fetch("/api/v1/admin/purge?entity=all", { method: "DELETE" });
+      if (res.status === 403) {
+        setResult({ success: false, error: forbiddenMessage });
+      } else if (res.ok) {
+        setResult({ success: true });
+      } else {
+        setResult({ success: false, error: "Failed to purge database" });
       }
+    } catch {
+      setResult({ success: false, error: "Network error while purging database" });
+    } finally {
+      setDeleting(false);
     }
-    if (forbidden) {
-      errors.push("Your role cannot do this");
-    }
-    setResult({ success, errors });
-    setDeleting(false);
-    setSelected(new Set());
   };
 
   return (
     <div
+      ref={dialogRef}
       role="dialog"
       aria-modal="true"
       aria-labelledby="delete-data-dialog-title"
@@ -169,7 +79,7 @@ function DeleteAllModal({ onClose }: { onClose: () => void }) {
         <div className="flex items-center justify-between px-5 py-4 border-b border-[#2a2a2a] flex-shrink-0">
           <div className="flex items-center gap-2">
             <Trash2 size={16} className="text-red-400" />
-            <p id="delete-data-dialog-title" className="text-sm font-bold text-[#f9f9f9]">Delete Data</p>
+            <p id="delete-data-dialog-title" className="text-sm font-bold text-[#f9f9f9]">Delete All Data</p>
           </div>
           <button onClick={onClose} aria-label="Close dialog" className="p-1 rounded text-[#6b7280] hover:text-[#f9f9f9]"><X size={16} /></button>
         </div>
@@ -177,149 +87,72 @@ function DeleteAllModal({ onClose }: { onClose: () => void }) {
         {result ? (
           // Result state
           <div className="p-5 space-y-3">
-            {result.success.length > 0 && (
+            {result.success ? (
               <div className="flex items-start gap-2 bg-emerald-500/10 border border-emerald-500/20 rounded-lg p-3">
                 <CheckCircle2 size={14} className="text-emerald-400 mt-0.5 flex-shrink-0" />
                 <div>
-                  <p className="text-xs font-semibold text-emerald-300 mb-0.5">Deleted successfully</p>
-                  <p className="text-xs text-emerald-400/70">{result.success.length} entity type{result.success.length > 1 ? "s" : ""} purged</p>
+                  <p className="text-xs font-semibold text-emerald-300 mb-0.5">Database purged successfully</p>
+                  <p className="text-xs text-emerald-400/70">All entity records have been reset. Audit logs were preserved.</p>
                 </div>
               </div>
-            )}
-            {result.errors.length > 0 && (
+            ) : (
               <div className="flex items-start gap-2 bg-red-500/10 border border-red-500/20 rounded-lg p-3">
                 <AlertCircle size={14} className="text-red-400 mt-0.5 flex-shrink-0" />
-                <p className="text-xs text-red-300">Failed: {result.errors.join(", ")}</p>
+                <p className="text-xs text-red-300">Failed: {result.error}</p>
               </div>
             )}
-            <button onClick={onClose}
-              className="w-full py-2.5 text-sm rounded-lg border border-[#2a2a2a] text-[#a0a0a0] hover:text-[#f9f9f9] hover:border-[#333] transition-colors">
+            <button
+              onClick={onClose}
+              className="w-full py-2.5 text-sm rounded-lg border border-[#2a2a2a] text-[#a0a0a0] hover:text-[#f9f9f9] hover:border-[#333] transition-colors"
+            >
               Close
             </button>
           </div>
         ) : (
-          <>
-            {/* Select-all bar */}
-            <div className="flex items-center justify-between px-5 py-2.5 border-b border-[#1a1a1a] flex-shrink-0 bg-[#111]">
-              <p className="text-xs text-[#6b7280]">
-                {loadingStats ? "Loading…" : `${selected.size} of ${allKeys.length} selected`}
-              </p>
-              <div className="flex gap-3">
-                <button onClick={selectAll}
-                  className="text-xs text-amber-400 hover:text-amber-300 font-medium">
-                  Select All
-                </button>
-                <button onClick={clearAll}
-                  className="text-xs text-[#6b7280] hover:text-[#f9f9f9]">
-                  Clear
-                </button>
+          <div className="p-5 space-y-4">
+            <div className="flex items-start gap-2.5 bg-red-500/10 border border-red-500/20 rounded-lg p-3">
+              <AlertCircle size={15} className="text-red-400 flex-shrink-0 mt-0.5" />
+              <div className="space-y-1">
+                <p className="text-xs font-semibold text-red-300">Permanent Database Reset</p>
+                <p className="text-xs text-red-400/80 leading-relaxed">
+                  This will permanently delete all records across all entity types (equipment, sensors, incidents, work orders, documents, graph, compliance). Audit logs are append-only evidence and cannot be purged. This action cannot be undone.
+                </p>
               </div>
             </div>
 
-            {/* Entity groups — scrollable */}
-            <div className="overflow-y-auto flex-1 p-3 space-y-2">
-              {ENTITY_GROUPS.map(({ group, icon: GIcon, color, entities }) => {
-                const keys = entities.map(e => e.key);
-                const allIn = keys.every(k => selected.has(k));
-                const someIn = keys.some(k => selected.has(k));
-                return (
-                  <div key={group} className="bg-[#111] border border-[#2a2a2a] rounded-lg overflow-hidden">
-                    {/* Group header */}
-                    <button
-                      onClick={() => toggleGroup(keys)}
-                      className="w-full flex items-center gap-2.5 px-3 py-2 hover:bg-[#1a1a1a] transition-colors text-left"
-                    >
-                      <div className={clsx(
-                        "w-4 h-4 rounded border-2 flex items-center justify-center flex-shrink-0",
-                        allIn ? "bg-red-500 border-red-500" : someIn ? "bg-red-500/40 border-red-500/60" : "border-[#4b5563]",
-                      )}>
-                        {allIn && <span className="text-white text-xs font-bold leading-none">✓</span>}
-                        {!allIn && someIn && <span className="text-white text-xs font-bold leading-none">–</span>}
-                      </div>
-                      <GIcon size={13} className={color} />
-                      <span className="text-xs font-semibold text-[#f9f9f9] flex-1">{group}</span>
-                      <span className="text-xs text-[#4b5563]">
-                        {keys.reduce((s, k) => s + (stats[k] || 0), 0)} records
-                      </span>
-                    </button>
-                    {/* Entity rows */}
-                    <div className="border-t border-[#1a1a1a]">
-                      {entities.map(({ key, label, icon: EIcon }) => (
-                        <button
-                          key={key}
-                          onClick={() => toggle(key)}
-                          className={clsx(
-                            "w-full flex items-center gap-2.5 px-3 py-1.5 text-xs hover:bg-[#1a1a1a] transition-colors text-left",
-                            selected.has(key) ? "text-[#f9f9f9]" : "text-[#6b7280]",
-                          )}
-                        >
-                          <div className={clsx(
-                            "w-3.5 h-3.5 rounded border flex items-center justify-center flex-shrink-0",
-                            selected.has(key) ? "bg-red-500 border-red-500" : "border-[#4b5563]",
-                          )}>
-                            {selected.has(key) && <span className="text-white text-xs leading-none" style={{ fontSize: "9px" }}>✓</span>}
-                          </div>
-                          <EIcon size={11} className="flex-shrink-0 text-[#4b5563]" />
-                          <span className="flex-1">{label}</span>
-                          <span className={clsx(
-                            "font-mono text-xs px-1.5 py-0.5 rounded",
-                            (stats[key] || 0) > 0 ? "bg-[#2a2a2a] text-[#a0a0a0]" : "text-[#374151]",
-                          )}>
-                            {stats[key] ?? "—"}
-                          </span>
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-                );
-              })}
+            <div className="flex gap-2 pt-2">
+              <button
+                onClick={onClose}
+                disabled={deleting}
+                className="flex-1 py-2 text-sm rounded-lg border border-[#2a2a2a] text-[#a0a0a0] hover:text-[#f9f9f9] hover:border-[#333] transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={purgeAll}
+                disabled={deleting}
+                className="flex-1 py-2 text-sm rounded-lg flex items-center justify-center gap-2 font-medium bg-red-500/20 border border-red-500/40 text-red-400 hover:bg-red-500/30 transition-colors"
+              >
+                {deleting ? (
+                  <>
+                    <Loader2 size={13} className="animate-spin" />
+                    Deleting…
+                  </>
+                ) : (
+                  <>
+                    <Trash2 size={13} />
+                    Delete Everything
+                  </>
+                )}
+              </button>
             </div>
-
-            {/* Warning + actions */}
-            <div className="px-4 pb-4 pt-2 flex-shrink-0 border-t border-[#1a1a1a] space-y-2">
-              {selected.size > 0 && (
-                <div className="flex items-start gap-2 bg-red-500/10 border border-red-500/20 rounded-lg p-2.5">
-                  <AlertCircle size={13} className="text-red-400 flex-shrink-0 mt-0.5" />
-                  <p className="text-xs text-red-300">
-                    Permanently deletes{" "}
-                    <span className="font-bold">
-                      {Array.from(selected).reduce((s, k) => s + (stats[k] || 0), 0)} records
-                    </span>{" "}
-                    across {selected.size} entity type{selected.size > 1 ? "s" : ""}. Cannot be undone.
-                  </p>
-                </div>
-              )}
-              <div className="flex gap-2">
-                <button onClick={onClose} disabled={deleting}
-                  className="flex-1 py-2 text-sm rounded-lg border border-[#2a2a2a] text-[#a0a0a0] hover:text-[#f9f9f9] hover:border-[#333] transition-colors">
-                  Cancel
-                </button>
-                <button
-                  onClick={purge}
-                  disabled={deleting || selected.size === 0}
-                  className={clsx(
-                    "flex-1 py-2 text-sm rounded-lg flex items-center justify-center gap-2 font-medium transition-colors",
-                    selected.size > 0
-                      ? "bg-red-500/20 border border-red-500/40 text-red-400 hover:bg-red-500/30"
-                      : "border border-[#2a2a2a] text-[#374151] cursor-not-allowed",
-                  )}
-                >
-                  {deleting
-                    ? <><Loader2 size={13} className="animate-spin" />Deleting…</>
-                    : allSelected
-                    ? <><Trash2 size={13} />Delete Everything</>
-                    : selected.size > 0
-                    ? <><Trash2 size={13} />Delete ({selected.size})</>
-                    : "Select items"}
-                </button>
-              </div>
-            </div>
-          </>
+          </div>
         )}
       </div>
     </div>
   );
 }
+
 
 // ─── Demo data modal ──────────────────────────────────────────────────────────
 
@@ -331,20 +164,13 @@ function DemoDataModal({ onClose }: { onClose: () => void }) {
     demo_doc_files?: { doc_id: string; filename: string }[];
   } | null>(null);
   const [error, setError] = useState("");
-
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
-    };
-    window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [onClose]);
+  const dialogRef = useDialogFocus<HTMLDivElement>(onClose);
 
   const generate = async () => {
     setGenerating(true); setError(""); setResult(null);
     try {
       const res = await fetch("/api/v1/admin/generate-demo", { method: "POST" });
-      if (res.status === 403) throw new Error("Your role cannot do this");
+      if (res.status === 403) throw new Error(forbiddenMessage);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       setResult(await res.json());
     } catch (e: any) {
@@ -356,12 +182,12 @@ function DemoDataModal({ onClose }: { onClose: () => void }) {
 
   const WHAT_GETS_CREATED = [
     { icon: "⚙️",  label: "Equipment — P-101 pump (vibration alarm), K-401 compressor (pressure drop), HX-201, V-301, P-202, G-101" },
-    { icon: "👤", label: "Demo users across the technician → manager roles" },
+    { icon: "👤", label: "Demo users across the technician → manager roles, and who looks after each asset" },
     { icon: "🔩", label: "Spare parts with stock levels" },
     { icon: "🚨", label: "Past incidents for retrieval and lessons learned" },
-    { icon: "🔧", label: "Maintenance records" },
-    { icon: "📈", label: "30-day sensor history — P-101 vibration trending up, K-401 pressure declining" },
-    { icon: "🕸️",  label: "Knowledge graph nodes and links for equipment and incidents" },
+    { icon: "🔧", label: "Maintenance records (one overdue) and work orders, one completed with outcome feedback" },
+    { icon: "📈", label: "30-day history for every sensor — P-101 vibration and bearing temperature rising, K-401 pressure falling" },
+    { icon: "🕸️",  label: "Knowledge graph linking equipment, incidents, work orders, technicians and spare parts" },
     { icon: "⚖️",  label: "Compliance records, with open issues on most equipment" },
   ];
 
@@ -376,6 +202,7 @@ function DemoDataModal({ onClose }: { onClose: () => void }) {
 
   return (
     <div
+      ref={dialogRef}
       role="dialog"
       aria-modal="true"
       aria-labelledby="generate-demo-dialog-title"
@@ -504,7 +331,7 @@ function DemoDataModal({ onClose }: { onClose: () => void }) {
               <div className="bg-amber-500/5 border border-amber-500/20 rounded-xl p-3">
                 <p className="text-xs font-semibold text-amber-400 mb-1.5">Step 2 — upload documents yourself</p>
                 <p className="text-[11px] text-[#a0a0a0] leading-relaxed">
-                  9 sample documents (PDF, DOCX, XLSX, PPTX, TXT, CSV) will be generated on disk.
+                  3 sample documents (two PDF reports and a TXT shift handover) will be generated on disk.
                   After generation, download them from the success screen and upload via the{" "}
                   <strong className="text-amber-300">Documents</strong> page to see the full AI extraction pipeline live.
                 </p>
@@ -546,83 +373,31 @@ function DemoDataModal({ onClose }: { onClose: () => void }) {
   );
 }
 
-// ─── User picker ──────────────────────────────────────────────────────────────
+// ─── Signed-in user ───────────────────────────────────────────────────────────
 
-function UserPicker() {
-  const { users, currentUser, setCurrentUser, logoutUser } = useCurrentUser();
-  const [open, setOpen] = useState(false);
-  const isDemoMode = process.env.NEXT_PUBLIC_DEMO_MODE === "true";
-
+function SignedInUser() {
+  const { currentUser, logoutUser } = useCurrentUser();
   if (!currentUser) return null;
 
   return (
-    <div className="relative">
-      <div className="flex items-center gap-1 w-full">
-        {isDemoMode ? (
-          <button
-            onClick={() => setOpen(o => !o)}
-            className="flex-1 flex items-center gap-2 px-3 py-2 rounded-lg hover:bg-[#242424] transition-colors text-left"
-            title="Demo Mode: Click to switch active role"
-          >
-            <div className="w-7 h-7 rounded-full bg-amber-500/20 border border-amber-500/30 flex items-center justify-center flex-shrink-0">
-              <span className="text-amber-400 text-xs font-bold">{currentUser.name.charAt(0)}</span>
-            </div>
-            <div className="flex-1 min-w-0">
-              <p className="text-xs font-medium text-[#f9f9f9] truncate">{currentUser.name}</p>
-              <p className="text-xs text-[#6b7280] truncate">{ROLE_LABEL[currentUser.role] ?? currentUser.role}</p>
-            </div>
-            <ChevronDown size={12} className="text-[#4b5563] flex-shrink-0" />
-          </button>
-        ) : (
-          <div className="flex-1 flex items-center gap-2 px-3 py-2 rounded-lg text-left">
-            <div className="w-7 h-7 rounded-full bg-amber-500/20 border border-amber-500/30 flex items-center justify-center flex-shrink-0">
-              <span className="text-amber-400 text-xs font-bold">{currentUser.name.charAt(0)}</span>
-            </div>
-            <div className="flex-1 min-w-0">
-              <p className="text-xs font-medium text-[#f9f9f9] truncate">{currentUser.name}</p>
-              <p className="text-xs text-[#6b7280] truncate">{ROLE_LABEL[currentUser.role] ?? currentUser.role}</p>
-            </div>
-          </div>
-        )}
-        <button
-          onClick={() => logoutUser()}
-          title="Sign out"
-          className="p-2 rounded-lg text-[#6b7280] hover:text-red-400 hover:bg-red-500/10 transition-colors flex-shrink-0"
-        >
-          <LogOut size={14} />
-        </button>
+    <div className="flex items-center gap-1 w-full">
+      <div className="flex-1 flex items-center gap-2 px-3 py-2 rounded-lg text-left min-w-0">
+        <div className="w-7 h-7 rounded-full bg-amber-500/20 border border-amber-500/30 flex items-center justify-center flex-shrink-0">
+          <span className="text-amber-400 text-xs font-bold">{currentUser.name.charAt(0)}</span>
+        </div>
+        <div className="flex-1 min-w-0">
+          <p className="text-xs font-medium text-[#f9f9f9] truncate">{currentUser.name}</p>
+          <p className="text-xs text-[#6b7280] truncate">{roleLabel[currentUser.role] ?? currentUser.role}</p>
+        </div>
       </div>
-
-      {isDemoMode && open && (
-        <>
-          {/* Backdrop */}
-          <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
-          <div className="absolute bottom-full left-0 right-0 mb-1 bg-[#1f1f1f] border border-[#2a2a2a] rounded-xl shadow-2xl z-50 max-h-52 overflow-y-auto">
-            <p className="px-3 py-2 text-xs font-semibold text-[#4b5563] uppercase tracking-wider border-b border-[#2a2a2a]">
-              Acting As (Demo Switcher)
-            </p>
-            {users.map(u => (
-              <button
-                key={u.id}
-                onClick={() => { setCurrentUser(u); setOpen(false); }}
-                className={clsx(
-                  "w-full flex items-center gap-2 px-3 py-2 text-xs hover:bg-[#2a2a2a] transition-colors text-left",
-                  currentUser?.id === u.id ? "text-amber-400 bg-amber-500/5" : "text-[#a0a0a0]",
-                )}
-              >
-                <div className="w-6 h-6 rounded-full bg-[#2a2a2a] border border-[#333] flex items-center justify-center flex-shrink-0">
-                  <span className="text-[#6b7280] text-xs">{u.name.charAt(0)}</span>
-                </div>
-                <div className="flex-1 min-w-0">
-                  <p className="font-medium truncate">{u.name}</p>
-                  <p className="text-[#4b5563]">{ROLE_LABEL[u.role] ?? u.role}</p>
-                </div>
-                {currentUser?.id === u.id && <span className="text-amber-400 flex-shrink-0">●</span>}
-              </button>
-            ))}
-          </div>
-        </>
-      )}
+      <button
+        onClick={() => logoutUser()}
+        title="Sign out"
+        aria-label="Sign out"
+        className="p-2 rounded-lg text-[#6b7280] hover:text-red-400 hover:bg-red-500/10 transition-colors flex-shrink-0"
+      >
+        <LogOut size={14} />
+      </button>
     </div>
   );
 }
@@ -638,7 +413,7 @@ function SidebarContent() {
   const pathname = usePathname();
   const { theme, toggleTheme } = useTheme();
   const { currentUser } = useCurrentUser();
-  const isManager = currentUser?.role === "manager";
+  const isAdmin = hasRole(currentUser?.role, adminRoles);
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [demoOpen,   setDemoOpen]   = useState(false);
   const [apiStatus, setApiStatus]   = useState<"online" | "offline" | "checking">("checking");
@@ -673,6 +448,7 @@ function SidebarContent() {
         {/* Mobile close button */}
         <button
           onClick={() => setMobileOpen(false)}
+          aria-label="Close navigation"
           className="lg:hidden p-1.5 rounded-md border border-[#2a2a2a] text-[#6b7280] hover:text-[#f9f9f9] transition-colors flex-shrink-0"
         >
           <X size={14} />
@@ -700,10 +476,10 @@ function SidebarContent() {
 
       {/* Footer */}
       <div className="border-t border-[#2a2a2a] flex-shrink-0 p-3 space-y-2">
-        <UserPicker />
+        <SignedInUser />
 
         {/* Generate Demo Data button (manager only) */}
-        {isManager && (
+        {isAdmin && (
           <button
             onClick={() => setDemoOpen(true)}
             className="w-full flex items-center justify-center gap-2 py-2 rounded-lg bg-amber-500/10 border border-amber-500/25 text-amber-400 text-xs font-semibold hover:bg-amber-500/20 hover:border-amber-500/40 transition-colors"
@@ -730,7 +506,7 @@ function SidebarContent() {
                : "Checking…"}
             </p>
           </div>
-          {isManager && (
+          {isAdmin && (
             <button
               onClick={() => setDeleteOpen(true)}
               title="Delete all data"

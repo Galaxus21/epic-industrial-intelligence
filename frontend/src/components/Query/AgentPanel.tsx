@@ -5,12 +5,15 @@
 import { CheckCircle2, Loader2, Clock } from "lucide-react";
 import type { AgentEvent } from "@/lib/types";
 import { THEME } from "@/lib/theme";
+import { accentClass, accentStyle } from "@/lib/accentStyle";
 import clsx from "clsx";
 
 interface AgentPanelProps {
   events: AgentEvent[];
   isRunning: boolean;
 }
+
+const pendingAgentColor = "#8a93a2";
 
 const AGENT_ORDER: AgentEvent["agent"][] = [
   "equipment_brain",
@@ -56,7 +59,7 @@ export function AgentPanel({ events, isRunning }: AgentPanelProps) {
             {/* Content */}
             <div className="flex-1 min-w-0">
               <div className="flex items-center gap-2">
-                <p className="text-xs font-semibold" style={{ color: isDone || isCurrentlyActive ? color : "#4b5563" }}>
+                <p className={`text-xs font-semibold ${accentClass}`} style={accentStyle(isDone || isCurrentlyActive ? color : pendingAgentColor)}>
                   {label}
                 </p>
                 {isDone && <span className="text-xs text-[#6b7280] font-mono">✓</span>}

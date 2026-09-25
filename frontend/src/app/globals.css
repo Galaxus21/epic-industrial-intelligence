@@ -37,7 +37,7 @@ html[data-theme='light'] {
   --text-primary:   #111827;
   --text-secondary: #374151;
   --text-muted:     #6b7280;
-  --text-dim:       #9ca3af;
+  --text-dim:       #6b7280;
   --placeholder:    #9ca3af;
   color-scheme: light;
 }
@@ -87,12 +87,63 @@ html[data-theme='light'] [class*="text-[#e0e0e0]"] { color: #374151 !important; 
 html[data-theme='light'] [class*="text-[#d0d0d0]"] { color: #374151 !important; }
 html[data-theme='light'] [class*="text-[#c0c0c0]"] { color: #4b5563 !important; }
 html[data-theme='light'] [class*="text-[#a0a0a0]"] { color: #374151 !important; }
+/* Dim text goes no lighter than #6b7280 (4.8:1 on white): #9ca3af measured 2.5:1 and failed WCAG 1.4.3. */
 html[data-theme='light'] [class*="text-[#6b7280]"] { color: #6b7280 !important; }
-html[data-theme='light'] [class*="text-[#4b5563]"] { color: #9ca3af !important; }
+html[data-theme='light'] [class*="text-[#4b5563]"] { color: #6b7280 !important; }
 html[data-theme='light'] [class*="text-[#374151]"] { color: #6b7280 !important; }
-html[data-theme='light'] [class*="text-[#3a3a3a]"] { color: #9ca3af !important; }
-html[data-theme='light'] [class*="text-[#333]"]    { color: #9ca3af !important; }
-html[data-theme='light'] [class*="text-[#2e2e2e]"] { color: #9ca3af !important; }
+html[data-theme='light'] [class*="text-[#3a3a3a]"] { color: #6b7280 !important; }
+html[data-theme='light'] [class*="text-[#333]"]    { color: #6b7280 !important; }
+html[data-theme='light'] [class*="text-[#2e2e2e]"] { color: #6b7280 !important; }
+
+/* The -200 to -500 accent shades are tuned for a dark background and fall to 1.5–2.8:1 on white; in the  */
+/* light theme each hue uses its -700 shade. Matching the class token's start also catches opacity        */
+/* variants (text-amber-400/80) while leaving hover-only variants (hover:text-amber-400) alone.            */
+html[data-theme='light'] [class^="text-amber-200"],
+html[data-theme='light'] [class*=" text-amber-200"],
+html[data-theme='light'] [class^="text-amber-300"],
+html[data-theme='light'] [class*=" text-amber-300"],
+html[data-theme='light'] [class^="text-amber-400"],
+html[data-theme='light'] [class*=" text-amber-400"],
+html[data-theme='light'] [class^="text-amber-500"],
+html[data-theme='light'] [class*=" text-amber-500"] { color: #b45309 !important; }
+html[data-theme='light'] [class^="text-emerald-300"],
+html[data-theme='light'] [class*=" text-emerald-300"],
+html[data-theme='light'] [class^="text-emerald-400"],
+html[data-theme='light'] [class*=" text-emerald-400"],
+html[data-theme='light'] [class^="text-emerald-500"],
+html[data-theme='light'] [class*=" text-emerald-500"] { color: #047857 !important; }
+html[data-theme='light'] [class^="text-red-300"],
+html[data-theme='light'] [class*=" text-red-300"],
+html[data-theme='light'] [class^="text-red-400"],
+html[data-theme='light'] [class*=" text-red-400"],
+html[data-theme='light'] [class^="text-red-500"],
+html[data-theme='light'] [class*=" text-red-500"] { color: #b91c1c !important; }
+html[data-theme='light'] [class^="text-orange-400"],
+html[data-theme='light'] [class*=" text-orange-400"] { color: #c2410c !important; }
+html[data-theme='light'] [class^="text-purple-300"],
+html[data-theme='light'] [class*=" text-purple-300"],
+html[data-theme='light'] [class^="text-purple-400"],
+html[data-theme='light'] [class*=" text-purple-400"] { color: #7e22ce !important; }
+html[data-theme='light'] [class^="text-blue-300"],
+html[data-theme='light'] [class*=" text-blue-300"],
+html[data-theme='light'] [class^="text-blue-400"],
+html[data-theme='light'] [class*=" text-blue-400"] { color: #1d4ed8 !important; }
+html[data-theme='light'] [class^="text-teal-400"],
+html[data-theme='light'] [class*=" text-teal-400"] { color: #0f766e !important; }
+html[data-theme='light'] [class^="text-sky-400"],
+html[data-theme='light'] [class*=" text-sky-400"] { color: #0369a1 !important; }
+html[data-theme='light'] [class^="text-yellow-400"],
+html[data-theme='light'] [class*=" text-yellow-400"] { color: #a16207 !important; }
+html[data-theme='light'] [class*="text-[#9ca3af]"] { color: #4b5563 !important; }
+
+/* Data-driven colours (status, risk, health) are passed as --accent with the text-accent class          */
+/* (frontend/src/lib/accentStyle.ts). The light theme mixes in black so the bright shades stay readable.  */
+.text-accent                          { color: var(--accent); }
+html[data-theme='light'] .text-accent { color: color-mix(in srgb, var(--accent) 60%, black); }
+
+/* Dark theme: the dimmest greys (#2e2e2e to #4b5563) measured 1.5–2.6:1 on the near-black cards. */
+:root [class*="text-[#4b5563]"], :root [class*="text-[#374151]"], :root [class*="text-[#3a3a3a]"],
+:root [class*="text-[#333]"], :root [class*="text-[#2e2e2e]"] { color: #8a93a2; }
 
 html[data-theme='light'] [class*="border-[#0f0f0f]"]  { border-color: #e5e7eb !important; }
 html[data-theme='light'] [class*="border-[#1a1a1a]"]   { border-color: #e9ecf0 !important; }

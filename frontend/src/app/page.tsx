@@ -4,6 +4,7 @@
  */
 import { listEquipment } from "@/lib/api";
 import { EquipmentGrid } from "@/components/Dashboard/EquipmentGrid";
+import { accentClass, accentStyle } from "@/lib/accentStyle";
 import { AlertTriangle, CheckCircle2, Gauge, Activity } from "lucide-react";
 
 export const dynamic = "force-dynamic";
@@ -83,7 +84,7 @@ function KpiCard({
         {icon}
         <p className="text-xs text-[#6b7280]">{label}</p>
       </div>
-      <p className="text-2xl font-bold" style={{ color }}>{value}</p>
+      <p className={`text-2xl font-bold ${accentClass}`} style={accentStyle(color)}>{value}</p>
       <p className="text-xs text-[#6b7280] mt-1">{sub}</p>
     </div>
   );

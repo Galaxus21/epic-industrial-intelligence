@@ -9,7 +9,6 @@ import "./globals.css";
 import { Sidebar } from "@/components/Layout/Sidebar";
 import { Toaster } from "sonner";
 import { ClientProviders } from "./providers";
-import { ServiceWorkerRegister } from "@/components/PWA/ServiceWorkerRegister";
 
 export const metadata: Metadata = {
   title: "EPIC — Enterprise Platform for Industrial Cognition",
@@ -38,7 +37,6 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       </head>
       <body className="flex h-screen overflow-hidden bg-[#0f0f0f]">
         <ClientProviders>
-          <ServiceWorkerRegister />
           <Sidebar />
           <main className="flex-1 overflow-y-auto bg-[#0f0f0f] lg:pt-0 pt-12">
             {children}

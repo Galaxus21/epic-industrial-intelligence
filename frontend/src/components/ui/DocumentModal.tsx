@@ -12,8 +12,10 @@ import {
   AlertTriangle, Info,
 } from "lucide-react";
 import { Badge } from "@/components/ui/Badge";
+import { HeldEntitiesNotice } from "@/components/ui/HeldEntitiesNotice";
 import type { DocumentDetail } from "@/lib/types";
 import { getDocument } from "@/lib/api";
+import { useDialogFocus } from "@/lib/useDialogFocus";
 import clsx from "clsx";
 
 const TYPE_BADGE: Record<string, "info" | "success" | "warning" | "muted" | "high"> = {
@@ -87,17 +89,7 @@ export function DocumentModal({ docId, onClose }: DocumentModalProps) {
       .finally(() => setLoading(false));
   }, [docId]);
 
-  useEffect(() => {
-    if (!docId) return;
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        e.preventDefault();
-        onClose();
-      }
-    };
-    window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [docId, onClose]);
+  const dialogRef = useDialogFocus<HTMLDivElement>(onClose, Boolean(docId));
 
   if (!docId) return null;
 
@@ -111,9 +103,11 @@ export function DocumentModal({ docId, onClose }: DocumentModalProps) {
 
       {/* Slide-over panel */}
       <div
+        ref={dialogRef}
         role="dialog"
         aria-modal="true"
         aria-labelledby="document-modal-title"
+        tabIndex={-1}
         className="fixed inset-y-0 right-0 w-full max-w-2xl bg-[#0f0f0f] border-l border-[#2a2a2a] z-50 flex flex-col shadow-2xl overflow-hidden"
       >
 
@@ -188,18 +182,7 @@ export function DocumentModal({ docId, onClose }: DocumentModalProps) {
                 </div>
               )}
 
-              {/* Entities Pending Review Notice */}
-              {(doc.entities_pending_review || doc.pending_review_note) && (
-                <div className="p-3 bg-amber-500/10 border border-amber-500/30 rounded-xl">
-                  <div className="flex items-center gap-1.5 mb-1.5">
-                    <AlertTriangle size={14} className="text-amber-400" />
-                    <span className="text-xs font-semibold text-amber-400">Entities Held for Review</span>
-                  </div>
-                  <p className="text-xs text-[#d1d5db] leading-relaxed">
-                    {doc.pending_review_note || "Extracted entities are held for review and have not been registered to the graph."}
-                  </p>
-                </div>
-              )}
+              <HeldEntitiesNotice doc={doc} />
 
               {/* Char count / processing stats */}
               {doc.char_count != null && (

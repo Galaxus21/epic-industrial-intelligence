@@ -9,7 +9,8 @@ import { EquipmentTimeline } from "@/components/Equipment/EquipmentTimeline";
 import { SensorChart } from "@/components/Equipment/SensorChart";
 import { BrainConnections } from "@/components/Equipment/BrainConnections";
 import { AlertTriangle, ArrowLeft, BrainCircuit, Zap } from "lucide-react";
-import { formatSensorLabel, isSensorInAlarm } from "@/lib/sensor-utils";
+import { formatSensorLabel, isAlarmStatus } from "@/lib/sensorDisplay";
+import { accentClass, accentStyle } from "@/lib/accentStyle";
 
 export const dynamic = "force-dynamic";
 
@@ -29,8 +30,9 @@ export default async function EquipmentDetailPage({ params }: { params: { id: st
     );
   }
 
+  const statuses = eq.reading_status ?? {};
   const vibrationReading = eq.current_readings?.vibration_de;
-  const vibrationAlert = vibrationReading && vibrationReading.alarm && vibrationReading.value > vibrationReading.alarm;
+  const vibrationAlert = isAlarmStatus(statuses.vibration_de);
   const healthColor = eq.health_score == null ? "#6b7280" : eq.health_score >= 85 ? "#10b981" : eq.health_score >= 65 ? "#f59e0b" : eq.health_score >= 45 ? "#f97316" : "#ef4444";
 
   return (
@@ -88,12 +90,12 @@ export default async function EquipmentDetailPage({ params }: { params: { id: st
           <h2 className="text-sm font-semibold text-[#a0a0a0] mb-3">Current Readings</h2>
           <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
             {Object.entries(eq.current_readings).map(([key, reading]) => {
-              const isAlarm = isSensorInAlarm(reading);
+              const isAlarm = isAlarmStatus(statuses[key]);
               return (
                 <div key={key} className={`bg-[#1f1f1f] border rounded-lg p-3 ${isAlarm ? "border-orange-500/40" : "border-[#2a2a2a]"}`}>
                   <p className="text-xs text-[#a0a0a0] mb-1">{formatSensorLabel(key)}</p>
                   <p className={`text-lg font-bold ${isAlarm ? "text-orange-400" : "text-[#f9f9f9]"}`}>
-                    {reading.value}
+                    {reading.value ?? "—"}
                     <span className="text-xs font-normal text-[#6b7280] ml-1">{reading.unit}</span>
                   </p>
                   {reading.alarm && (
@@ -125,7 +127,12 @@ export default async function EquipmentDetailPage({ params }: { params: { id: st
       {sensors.sensors.vibration_de && sensors.sensors.vibration_de.length > 0 && (
         <div className="bg-[#1f1f1f] border border-[#2a2a2a] rounded-xl p-4">
           <h2 className="text-sm font-semibold text-[#a0a0a0] mb-4">Vibration Trend (DE Bearing)</h2>
-          <SensorChart data={sensors.sensors.vibration_de} alarmThreshold={7.1} tripThreshold={11.2} unit="mm/s" />
+          <SensorChart
+            data={sensors.sensors.vibration_de}
+            alarmThreshold={vibrationReading?.alarm}
+            tripThreshold={vibrationReading?.trip}
+            unit={vibrationReading?.unit ?? ""}
+          />
         </div>
       )}
     </div>
@@ -136,7 +143,7 @@ function ScoreBox({ label, value, color, unit }: { label: string; value: number 
   return (
     <div className="bg-[#1a1a1a] border border-[#2a2a2a] rounded-lg p-3 text-center min-w-[80px]">
       <p className="text-xs text-[#6b7280] mb-1">{label}</p>
-      <p className="text-xl font-bold" style={{ color }}>{value != null ? `${value}${unit}` : "—"}</p>
+      <p className={`text-xl font-bold ${accentClass}`} style={accentStyle(color)}>{value != null ? `${value}${unit}` : "—"}</p>
     </div>
   );
 }

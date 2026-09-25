@@ -8,6 +8,7 @@ import Link from "next/link";
 import { AlertTriangle, Clock, Activity, Sparkles, Plus } from "lucide-react";
 import { Badge } from "@/components/ui/Badge";
 import type { Equipment } from "@/lib/types";
+import { accentClass, accentStyle } from "@/lib/accentStyle";
 
 interface EquipmentGridProps {
   equipment: Equipment[];
@@ -36,8 +37,8 @@ function HealthBar({ value }: { value: number }) {
 function EquipmentCard({ eq }: { eq: Equipment }) {
   const riskVariant = getRiskVariant(eq.failure_probability ?? null);
   const maintenanceUrgent = eq.maintenance_due_days != null && eq.maintenance_due_days <= 7;
-  const isDiscovered = eq._discovered === true;
-  const sourceDocs = eq._source_documents ?? [];
+  const isDiscovered = eq.discovered === true;
+  const sourceDocs = eq.source_documents ?? [];
   const healthColor =
     eq.health_score == null ? "#6b7280" :
     eq.health_score >= 85 ? "#10b981" : eq.health_score >= 65 ? "#f59e0b" : eq.health_score >= 45 ? "#f97316" : "#ef4444";
@@ -78,8 +79,8 @@ function EquipmentCard({ eq }: { eq: Equipment }) {
           <div className="flex items-center justify-between mb-1">
             <span className="text-xs text-[#6b7280]">Health Score</span>
             <span
-              className="text-sm font-bold"
-              style={{ color: healthColor }}
+              className={`text-sm font-bold ${accentClass}`}
+              style={accentStyle(healthColor)}
               title={eq.health_score != null ? `Health score ${eq.health_score}% — ${eq.health_score >= 85 ? 'Good condition' : eq.health_score >= 65 ? 'Monitor closely' : eq.health_score >= 45 ? 'Needs attention' : 'Critical condition'}` : 'Health score not yet available'}
             >
               {eq.health_score != null ? `${eq.health_score}%` : "—"}
@@ -108,7 +109,7 @@ function EquipmentCard({ eq }: { eq: Equipment }) {
               title={eq.compliance_score != null ? `Compliance score: ${eq.compliance_score}% — regulatory, maintenance & safety compliance` : 'Compliance score not yet calculated'}
             >
               <p className="text-xs text-[#6b7280]">Compliance</p>
-              <p className="text-xs font-semibold" style={{ color: eq.compliance_score != null && eq.compliance_score >= 90 ? "#10b981" : "#f59e0b" }}>
+              <p className={`text-xs font-semibold ${accentClass}`} style={accentStyle(eq.compliance_score != null && eq.compliance_score >= 90 ? "#10b981" : "#f59e0b")}>
                 {eq.compliance_score != null ? `${eq.compliance_score}%` : "—"}
               </p>
             </div>
@@ -152,9 +153,9 @@ function EquipmentCard({ eq }: { eq: Equipment }) {
 }
 
 export function EquipmentGrid({ equipment }: EquipmentGridProps) {
-  const alerts     = equipment.filter(e => !e._discovered && e.health_score != null && (e.health_score < 80 || (e.failure_probability ?? 0) > 15));
-  const ok         = equipment.filter(e => !e._discovered && (e.health_score == null || (e.health_score >= 80 && (e.failure_probability ?? 0) <= 15)));
-  const discovered = equipment.filter(e => e._discovered);
+  const alerts     = equipment.filter(e => !e.discovered && e.health_score != null && (e.health_score < 80 || (e.failure_probability ?? 0) > 15));
+  const ok         = equipment.filter(e => !e.discovered && (e.health_score == null || (e.health_score >= 80 && (e.failure_probability ?? 0) <= 15)));
+  const discovered = equipment.filter(e => e.discovered);
 
   return (
     <div>

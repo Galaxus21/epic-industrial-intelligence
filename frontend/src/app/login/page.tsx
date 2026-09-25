@@ -3,7 +3,8 @@
 import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { BrainCircuit, Lock, User, AlertCircle, ArrowRight, Sparkles, Loader2 } from "lucide-react";
-import { useCurrentUser, ROLE_LABEL, type UserProfile } from "@/lib/user-context";
+import { useCurrentUser, type UserProfile } from "@/lib/user-context";
+import { roleLabel } from "@/lib/roles";
 
 export default function LoginPage() {
   const router = useRouter();
@@ -131,14 +132,14 @@ export default function LoginPage() {
         </form>
 
         {/* Demo Quick-Login section */}
-        {demoUsers.filter(u => ["technician", "supervisor", "manager"].includes(u.role)).length > 0 && (
+        {demoUsers.length > 0 && (
           <div className="mt-8 border-t border-[#262626] pt-5">
             <div className="flex items-center gap-1.5 text-xs text-[#737373] mb-3 uppercase tracking-wider font-semibold">
               <Sparkles size={13} className="text-amber-400" />
               <span>Demo Quick Sign-In</span>
             </div>
             <div className="grid grid-cols-2 gap-2 max-h-48 overflow-y-auto">
-              {demoUsers.filter(u => ["technician", "supervisor", "manager"].includes(u.role)).map(u => (
+              {demoUsers.map(u => (
                 <button
                   key={u.id}
                   type="button"
@@ -153,7 +154,7 @@ export default function LoginPage() {
                     {u.name}
                   </p>
                   <p className="text-[10px] text-[#737373] truncate">
-                    {ROLE_LABEL[u.role] ?? u.role} · {u.employee_id}
+                    {roleLabel[u.role] ?? u.role} · {u.employee_id}
                   </p>
                 </button>
               ))}

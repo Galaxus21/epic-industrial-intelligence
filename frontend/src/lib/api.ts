@@ -5,7 +5,7 @@
  */
 import type {
   Equipment, GraphData, Document, DocumentDetail,
-  TimelineEvent, AgentEvent, SavedChecklist, SavedWorkOrder, GeneratedDoc, MaintenanceRecord,
+  TimelineEvent, AgentEvent, SavedWorkOrder, GeneratedDoc, MaintenanceRecord,
 } from "./types";
 
 export type { MaintenanceRecord } from "./types";
@@ -25,48 +25,67 @@ export interface RequestOptions {
   timeoutMs?: number;
 }
 
+const maxPlainErrorChars = 300;
+
+// A local Ollama model can take minutes for one reply: the backend waits up to 180 s per attempt, twice
+// (backend/app/services/providers/ollamaProvider.py). next.config.mjs keeps its proxy timeout above this.
+export const modelReplyTimeoutMs = 6 * 60 * 1000;
+
+export const forbiddenMessage = "Your role cannot do this";
+
+/** A failed HTTP call: the server's message plus the status, so a caller can tell 403 from 500. */
+export class ApiError extends Error {
+  constructor(message: string, readonly status: number) {
+    super(message);
+    this.name = "ApiError";
+  }
+}
+
 /**
  * Extract backend error detail (string or FastAPI validation error array)
- * into a descriptive, user-actionable Error message.
+ * into a descriptive, user-actionable ApiError.
  */
-export async function extractError(res: Response, fallbackPrefix: string): Promise<Error> {
+export async function extractError(res: Response, fallbackPrefix: string): Promise<ApiError> {
+  const detail = await readErrorDetail(res);
+  return new ApiError(detail ?? `${fallbackPrefix} → ${res.status}${res.statusText ? " " + res.statusText : ""}`, res.status);
+}
+
+/** The text to show for a failed action: one fixed sentence for 403, otherwise the server's message. */
+export function errorText(err: unknown, fallback: string): string {
+  if (err instanceof ApiError && err.status === 403) return forbiddenMessage;
+  if (err instanceof Error && err.message) return err.message;
+  return fallback;
+}
+
+async function readErrorDetail(res: Response): Promise<string | null> {
+  const text = await res.text().catch(() => "");
+  if (!text) return null;
   try {
-    const text = await res.text();
-    if (text) {
-      try {
-        const json = JSON.parse(text);
-        if (json && typeof json === "object") {
-          const detail = (json as Record<string, unknown>).detail ?? (json as Record<string, unknown>).message ?? (json as Record<string, unknown>).error;
-          if (typeof detail === "string" && detail.trim()) {
-            return new Error(detail.trim());
-          }
-          if (Array.isArray(detail)) {
-            const msgs = detail.map((d: unknown) => {
-              if (typeof d === "string") return d;
-              if (d && typeof d === "object") {
-                const item = d as Record<string, unknown>;
-                const locArr = Array.isArray(item.loc) ? item.loc.filter(l => l !== "body") : [];
-                const loc = locArr.join(".");
-                const msg = typeof item.msg === "string" ? item.msg : JSON.stringify(item);
-                return loc ? `${loc}: ${msg}` : msg;
-              }
-              return String(d);
-            }).filter(Boolean);
-            if (msgs.length > 0) {
-              return new Error(msgs.join("; "));
-            }
-          }
-        }
-      } catch {
-        if (text.length < 300 && !text.includes("<html") && !text.includes("<!DOCTYPE")) {
-          return new Error(text.trim());
-        }
-      }
-    }
+    const json = JSON.parse(text) as Record<string, unknown> | null;
+    if (!json || typeof json !== "object") return null;
+    const detail = json.detail ?? json.message ?? json.error;
+    if (typeof detail === "string" && detail.trim()) return detail.trim();
+    if (Array.isArray(detail)) return formatValidationErrors(detail);
+    return null;
   } catch {
-    // Ignore read errors
+    const isPlainText = text.length < maxPlainErrorChars && !text.includes("<html") && !text.includes("<!DOCTYPE");
+    return isPlainText ? text.trim() : null;
   }
-  return new Error(`${fallbackPrefix} → ${res.status}${res.statusText ? " " + res.statusText : ""}`);
+}
+
+function formatValidationErrors(detail: unknown[]): string | null {
+  const msgs = detail.map((d: unknown) => {
+    if (typeof d === "string") return d;
+    if (d && typeof d === "object") {
+      const item = d as Record<string, unknown>;
+      const locArr = Array.isArray(item.loc) ? item.loc.filter(l => l !== "body") : [];
+      const loc = locArr.join(".");
+      const msg = typeof item.msg === "string" ? item.msg : JSON.stringify(item);
+      return loc ? `${loc}: ${msg}` : msg;
+    }
+    return String(d);
+  }).filter(Boolean);
+  return msgs.length > 0 ? msgs.join("; ") : null;
 }
 
 /**
@@ -184,10 +203,6 @@ export async function logout(options?: RequestOptions): Promise<void> {
   } finally {
     cleanup();
   }
-  if (typeof window !== "undefined") {
-    localStorage.removeItem("epicToken");
-    localStorage.removeItem("epicCurrentUserId");
-  }
 }
 
 // ─── Equipment ────────────────────────────────────────────────────────────────
@@ -199,7 +214,6 @@ export const getEquipmentTimeline = (id: string) =>
   get<{ equipment_id: string; events: TimelineEvent[] }>(`/api/v1/equipment/${id}/timeline`);
 export const getEquipmentSensors = (id: string) =>
   get<{ equipment_id: string; sensors: Record<string, { ts: string; value: number }[]> }>(`/api/v1/equipment/${id}/sensors`);
-export const getEquipmentSubgraph = (id: string) => get<GraphData>(`/api/v1/equipment/${id}/subgraph`);
 
 // ─── Knowledge Graph ──────────────────────────────────────────────────────────
 
@@ -249,13 +263,8 @@ export const listMaintenanceRecords = (params?: { equipment_id?: string; status?
   const q = qs.toString();
   return get<MaintenanceRecord[]>(`/api/v1/maintenance${q ? `?${q}` : ""}`, options);
 };
-export const getMaintenanceRecord = (id: string, options?: RequestOptions) => get<MaintenanceRecord>(`/api/v1/maintenance/${id}`, options);
-export const createMaintenanceRecord = (body: Partial<MaintenanceRecord>, options?: RequestOptions) =>
-  post<MaintenanceRecord>("/api/v1/maintenance", body, options);
-export const updateMaintenanceRecord = (id: string, body: Partial<MaintenanceRecord>, options?: RequestOptions) =>
-  patch<MaintenanceRecord>(`/api/v1/maintenance/${id}`, body, options);
 
-// ─── Work Orders & Checklists ─────────────────────────────────────────────────
+// ─── Work Orders ─────────────────────────────────────────────────────────────
 
 export async function post<T>(path: string, body: unknown, options?: RequestOptions): Promise<T> {
   const { signal, cleanup } = getRequestSignal(options?.signal, options?.timeoutMs);
@@ -303,18 +312,8 @@ export async function del(path: string, options?: RequestOptions): Promise<void>
   }
 }
 
-export const listChecklists = (equipmentId?: string) =>
-  get<SavedChecklist[]>(`/api/v1/ops/checklists${equipmentId ? `?equipment_id=${equipmentId}` : ""}`);
-export const getChecklist = (id: string) => get<SavedChecklist>(`/api/v1/ops/checklists/${id}`);
-export const createChecklist = (body: object) => post<SavedChecklist>("/api/v1/ops/checklists", body);
-export const updateChecklistItem = (id: string, body: object) => patch<SavedChecklist>(`/api/v1/ops/checklists/${id}/item`, body);
-export const completeChecklist = (id: string, body: object) => post<SavedChecklist>(`/api/v1/ops/checklists/${id}/complete`, body);
-export const updateChecklist = (id: string, body: object) => patch<SavedChecklist>(`/api/v1/ops/checklists/${id}`, body);
-export const deleteChecklist = (id: string) => del(`/api/v1/ops/checklists/${id}`);
-
 export const listWorkOrders = (equipmentId?: string) =>
   get<SavedWorkOrder[]>(`/api/v1/ops/work-orders${equipmentId ? `?equipment_id=${equipmentId}` : ""}`);
-export const getWorkOrder = (id: string) => get<SavedWorkOrder>(`/api/v1/ops/work-orders/${id}`);
 export const createWorkOrder = (body: object) => post<SavedWorkOrder>("/api/v1/ops/work-orders", body);
 export const updateWorkOrderStep = (id: string, body: object) => patch<SavedWorkOrder>(`/api/v1/ops/work-orders/${id}/step`, body);
 export const completeWorkOrder = (id: string, body: object) => post<SavedWorkOrder>(`/api/v1/ops/work-orders/${id}/complete`, body);
@@ -324,59 +323,31 @@ export const deleteWorkOrder = (id: string) => del(`/api/v1/ops/work-orders/${id
 export type OpsProposedChanges = {
   description?: string;
   risk_level?: string;
-  add_items?: string[];
-  toggle_items?: Array<{ index: number; checked: boolean }>;
   toggle_steps?: Array<{ step_index: number; checked: boolean }>;
   add_steps?: Array<{
     phase: string; title: string; description: string;
     safety_note?: string | null; expected_duration_minutes?: number;
   }>;
 };
-export type OpsChatResponse = { answer: string; proposed_changes: OpsProposedChanges | null };
+export type OpsChatResponse = {
+  answer: string;
+  proposed_changes: OpsProposedChanges | null;
+  withheld_changes?: string[];
+};
 
 export const chatWithWorkOrder = (
   id: string, body: { message: string; history: Array<{ role: string; content: string }> }
-) => post<OpsChatResponse>(`/api/v1/ops/work-orders/${id}/chat`, body);
-export const chatWithChecklist = (
-  id: string, body: { message: string; history: Array<{ role: string; content: string }> }
-) => post<OpsChatResponse>(`/api/v1/ops/checklists/${id}/chat`, body);
-export const addChecklistItems = (id: string, items: string[]) =>
-  post<SavedChecklist>(`/api/v1/ops/checklists/${id}/items/add`, { items });
+) => post<OpsChatResponse>(`/api/v1/ops/work-orders/${id}/chat`, body, { timeoutMs: modelReplyTimeoutMs });
 export const addWorkOrderSteps = (id: string, steps: object[]) =>
   post<SavedWorkOrder>(`/api/v1/ops/work-orders/${id}/steps/add`, { steps });
 
 export const deleteDocument = (id: string) => del(`/api/v1/documents/${id}`);
-export const updateDocument = (id: string, body: { name: string }) =>
-  patch<{ id: string; name: string }>(`/api/v1/documents/${id}`, body);
 
-// ─── Root Cause Analysis ──────────────────────────────────────────────────────
-
-export const getRCAEvents = () => get<unknown[]>("/api/v1/rca/events");
-export const analyzeRootCause = (body: { symptom: string; equipment_id?: string; severity?: string }) =>
-  post<unknown>("/api/v1/rca/analyze", body);
 
 // ─── Sensors ─────────────────────────────────────────────────────────────────
 
-export const listAllSensors = () => get<unknown[]>("/api/v1/sensors");
 export const getEquipmentSensorDashboard = (id: string) => get<unknown>(`/api/v1/sensors/${id}`);
-export const getSingleSensor = (id: string, key: string) => get<unknown>(`/api/v1/sensors/${id}/${key}`);
 
-// ─── Audit ────────────────────────────────────────────────────────────────────
-
-export const getAuditLog = (params?: { object_type?: string; equipment_id?: string; action?: string; days?: number; limit?: number; offset?: number }) => {
-  const qs = new URLSearchParams();
-  if (params?.object_type)  qs.set("object_type",  params.object_type);
-  if (params?.equipment_id) qs.set("equipment_id", params.equipment_id);
-  if (params?.action)       qs.set("action",        params.action);
-  if (params?.days)         qs.set("days",           String(params.days));
-  if (params?.limit)        qs.set("limit",          String(params.limit));
-  if (params?.offset)       qs.set("offset",         String(params.offset));
-  return get<unknown>(`/api/v1/audit${qs.toString() ? "?" + qs.toString() : ""}`);
-};
-export const getObjectHistory = (objectType: string, objectId: string) =>
-  get<unknown>(`/api/v1/audit/${objectType}/${objectId}`);
-export const getRelationMap = (equipmentId: string) =>
-  get<unknown>(`/api/v1/audit/relations/${equipmentId}`);
 
 // AI-assisted document creation — streams SSE events then returns the generated doc
 export async function* generateDocument(

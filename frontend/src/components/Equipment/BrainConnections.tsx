@@ -67,7 +67,8 @@ export function BrainConnections({ brain, equipmentId }: BrainConnectionsProps) 
       label: "Compliance",
       icon: <ShieldCheck size={13} className="text-teal-400" />,
       color: "text-teal-400",
-      items: compliance
+      // Equipment with no compliance record comes back as {}, which is no record rather than a score.
+      items: compliance?.overall_score != null
         ? [{ id: "cmp", text: `Score: ${compliance.overall_score}%`, sub: `${(compliance.issues as unknown[] | undefined)?.length ?? 0} open issues`, dot: (compliance.overall_score ?? 100) >= 90 ? "#10b981" : "#f97316", clickable: false }]
         : [],
     },

@@ -28,7 +28,6 @@ const NODE_TYPE_LABELS: Record<string, string> = {
   work_order:         "Work Order",
   feedback:           "Outcome",
   lesson:             "Lesson Learned",
-  checklist:          "Checklist",
   inspection_report:  "Inspection",
   document:           "Document",
   defect:             "Defect",

@@ -21,7 +21,7 @@ const VARIANT_CLASSES: Record<BadgeVariant, string> = {
   info:     "bg-blue-500/15 text-blue-400 border border-blue-500/30",
   success:  "bg-emerald-500/15 text-emerald-400 border border-emerald-500/30",
   warning:  "bg-amber-500/15 text-amber-400 border border-amber-500/30",
-  muted:    "bg-[#2a2a2a] text-[#6b7280] border border-[#333]",
+  muted:    "bg-[#2a2a2a] text-[#9ca3af] border border-[#333]",
 };
 
 export function Badge({ children, variant = "muted", className, title }: BadgeProps) {

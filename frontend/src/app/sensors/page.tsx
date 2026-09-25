@@ -4,9 +4,9 @@
  * Left panel  : equipment selector + sensor card grid
  *               (current value · status colour · trend arrow)
  * Right panel : selected sensor detail
- *               ├─ 30-day chart  (area + alarm/trip reference lines + anomaly shading)
- *               ├─ Stats row     (current · 7d avg · 30d max · 30d min · alarm events)
- *               └─ Tabbed panel (Maintenance · Incidents · Checklists)
+ *               ├─ history chart (area + alarm/trip reference lines + anomaly shading)
+ *               ├─ Stats row     (current · average of the last readings · max and min of stored history)
+ *               └─ Tabbed panel (Maintenance · Incidents)
  */
 "use client";
 
@@ -21,10 +21,12 @@ import {
 import { format, parseISO } from "date-fns";
 import {
   Activity, TrendingUp, TrendingDown, Minus, AlertTriangle, CheckCircle2,
-  Loader2, ChevronDown, ClipboardList, Wrench, Zap, BarChart3,
+  Loader2, ChevronDown, Wrench, Zap, BarChart3,
 } from "lucide-react";
 import clsx from "clsx";
 import type { Equipment } from "@/lib/types";
+import { isAlarmStatus, statusColor } from "@/lib/sensorDisplay";
+import { accentClass, accentStyle } from "@/lib/accentStyle";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -35,11 +37,11 @@ type SensorDetail = {
   key: string; label: string;
   current: number; unit: string;
   normal: number | null; alarm: number | null; trip: number | null;
-  status: string; status_color: string;
+  status: string;
   trend: string; trend_pct: number;
   history: HistoryPt[];
   anomaly_periods: AnomalyPeriod[];
-  stats: { current: number; max_30d: number; min_30d: number; avg_7d: number; data_points: number };
+  stats: { current?: number; max?: number; min?: number; avg_recent?: number; recent_count?: number; data_points?: number };
 };
 
 type MaintenanceRecord = {
@@ -52,24 +54,18 @@ type Incident = {
   symptom: string | null; root_cause: string | null;
 };
 
-type Checklist = {
-  id: string; risk_level: string | null; status: string;
-  created_at: string; item_count: number; checked_count: number;
-};
-
 type SensorDashboard = {
   equipment_id: string; equipment_name: string; equipment_type: string;
   location: string; health_score: number | null;
   sensors: Record<string, SensorDetail>;
   maintenance_records: MaintenanceRecord[];
   incidents: Incident[];
-  checklists: Checklist[];
 };
 
 // ── Status helpers ────────────────────────────────────────────────────────────
 
 const STATUS_LABEL: Record<string, string> = {
-  normal: "Normal", high: "High", low: "Low", alarm: "Alarm", trip: "TRIP",
+  normal: "Normal", high: "High", low: "Low", alarm: "Alarm", trip: "TRIP", no_reading: "No reading",
 };
 const STATUS_BG: Record<string, string> = {
   normal: "bg-emerald-500/10 text-emerald-400 border-emerald-500/20",
@@ -77,6 +73,7 @@ const STATUS_BG: Record<string, string> = {
   low:    "bg-sky-500/10 text-sky-400 border-sky-500/20",
   alarm:  "bg-orange-500/10 text-orange-400 border-orange-500/20",
   trip:   "bg-red-500/10 text-red-400 border-red-500/20",
+  no_reading: "bg-[#6b7280]/10 text-[#9ca3af] border-[#6b7280]/20",
 };
 
 const SEV_COLOR: Record<string, string> = {
@@ -95,7 +92,7 @@ function TrendIcon({ trend, pct }: { trend: string; pct: number }) {
 // ── Sensor card (left panel) ──────────────────────────────────────────────────
 
 function SensorCard({ s, active, onClick }: { s: SensorDetail; active: boolean; onClick: () => void }) {
-  const dot_color = s.status_color;
+  const dot_color = statusColor(s.status);
   return (
     <button
       onClick={onClick}
@@ -112,7 +109,7 @@ function SensorCard({ s, active, onClick }: { s: SensorDetail; active: boolean; 
         <TrendIcon trend={s.trend} pct={s.trend_pct} />
       </div>
       <div className="flex items-baseline gap-1 mt-0.5 pl-4">
-        <span className="text-base font-bold font-mono" style={{ color: dot_color }}>
+        <span className={`text-base font-bold font-mono ${accentClass}`} style={accentStyle(dot_color)}>
           {s.current}
         </span>
         <span className="text-[10px] text-[#4b5563]">{s.unit}</span>
@@ -145,6 +142,13 @@ function SensorCard({ s, active, onClick }: { s: SensorDetail; active: boolean; 
 // ── History chart ─────────────────────────────────────────────────────────────
 
 function SensorHistoryChart({ sensor }: { sensor: SensorDetail }) {
+  if (sensor.history.length === 0) {
+    return (
+      <p className="h-[220px] flex items-center justify-center text-xs text-[#6b7280]">
+        No stored history for this sensor. Only the current reading is known.
+      </p>
+    );
+  }
   // Downsample for performance: show every 3rd point for dense datasets
   const raw = sensor.history;
   const data = raw.length > 120
@@ -160,7 +164,7 @@ function SensorHistoryChart({ sensor }: { sensor: SensorDetail }) {
   const yMin = Math.floor(Math.min(...data.map(p => p.value)) * 0.9);
   const yMax = Math.ceil((sensor.trip ?? (sensor.alarm ? sensor.alarm * 1.3 : sensor.current * 1.3)) * 1.05);
 
-  const lineColor = sensor.status_color;
+  const lineColor = statusColor(sensor.status);
 
   return (
     <div className="w-full h-[220px]">
@@ -313,46 +317,10 @@ function IncidentsTab({ incidents }: { incidents: Incident[] }) {
   );
 }
 
-// ── Tab: Checklists ───────────────────────────────────────────────────────────
-
-function ChecklistsTab({ checklists }: { checklists: Checklist[] }) {
-  if (!checklists.length) return <p className="text-xs text-[#4b5563] italic py-4">No checklists found.</p>;
-  return (
-    <div className="space-y-2">
-      {checklists.map(cl => {
-        const pct = cl.item_count > 0 ? Math.round((cl.checked_count / cl.item_count) * 100) : 0;
-        return (
-          <div key={cl.id} className="p-3 bg-[#0f0f0f] border border-[#1e1e1e] rounded-xl">
-            <div className="flex items-center gap-2 mb-1.5">
-              <span className="text-[10px] font-mono text-amber-400/80">{cl.id}</span>
-              <span className={clsx("text-[9px] px-1.5 py-0.5 rounded border",
-                cl.status === "completed" ? "bg-emerald-500/10 text-emerald-400 border-emerald-500/20"
-                  : "bg-amber-500/10 text-amber-400 border-amber-500/20"
-              )}>{cl.status}</span>
-              {cl.risk_level && (
-                <span className={clsx("text-[9px] font-semibold ml-auto", SEV_COLOR[cl.risk_level] ?? "text-[#6b7280]")}>
-                  {cl.risk_level} Risk
-                </span>
-              )}
-            </div>
-            <div className="flex items-center gap-2">
-              <div className="flex-1 h-1 bg-[#252525] rounded-full overflow-hidden">
-                <div className="h-full bg-emerald-500 rounded-full" style={{ width: `${pct}%` }} />
-              </div>
-              <span className="text-[10px] text-[#6b7280] flex-shrink-0">{cl.checked_count}/{cl.item_count}</span>
-            </div>
-            <p className="text-[10px] text-[#4b5563] mt-1">{cl.created_at ? format(parseISO(cl.created_at), "MMM d, yyyy HH:mm") : "—"}</p>
-          </div>
-        );
-      })}
-    </div>
-  );
-}
-
 // ── Sensor detail panel (right) ───────────────────────────────────────────────
 
 function SensorDetailPanel({ dashboard, sensorKey }: { dashboard: SensorDashboard; sensorKey: string }) {
-  const [tab, setTab] = useState<"maintenance" | "incidents" | "checklists">("maintenance");
+  const [tab, setTab] = useState<"maintenance" | "incidents">("maintenance");
   const sensor = dashboard.sensors[sensorKey];
   if (!sensor) return null;
 
@@ -371,7 +339,7 @@ function SensorDetailPanel({ dashboard, sensorKey }: { dashboard: SensorDashboar
         <div className="flex items-center gap-2">
           {alarmCount > 0 && (
             <span className="text-xs px-2 py-0.5 rounded-full bg-orange-500/10 border border-orange-500/20 text-orange-400">
-              {alarmCount} alarm period{alarmCount !== 1 ? "s" : ""} in 30d
+              {alarmCount} alarm period{alarmCount !== 1 ? "s" : ""} in stored history
             </span>
           )}
           <span className={clsx("text-xs px-2.5 py-1 rounded-full border font-semibold", STATUS_BG[sensor.status] ?? STATUS_BG.normal)}>
@@ -384,15 +352,15 @@ function SensorDetailPanel({ dashboard, sensorKey }: { dashboard: SensorDashboar
       <div className="bg-[#0a0a0a] border border-[#1e1e1e] rounded-2xl p-4">
         <div className="flex items-center gap-2 mb-3">
           <BarChart3 size={13} className="text-amber-400" />
-          <span className="text-xs font-semibold text-[#a0a0a0]">30-Day History</span>
+          <span className="text-xs font-semibold text-[#a0a0a0]">Stored History</span>
           <span className="text-[10px] text-[#333] ml-auto">{sensor.stats?.data_points ?? "—"} data points</span>
         </div>
         <SensorHistoryChart sensor={sensor} />
         {/* Trend annotation */}
         {sensor.trend !== "stable" && (
-          <p className="text-[10px] mt-2 flex items-center gap-1" style={{ color: sensor.trend === "rising" ? "#f97316" : "#10b981" }}>
+          <p className={`text-[10px] mt-2 flex items-center gap-1 ${accentClass}`} style={accentStyle(sensor.trend === "rising" ? "#f97316" : "#10b981")}>
             {sensor.trend === "rising" ? <TrendingUp size={10} /> : <TrendingDown size={10} />}
-            {Math.abs(sensor.trend_pct)}% {sensor.trend} over last 7 days
+            {Math.abs(sensor.trend_pct)}% {sensor.trend}: the last {sensor.stats?.recent_count} readings against the ones before
           </p>
         )}
       </div>
@@ -400,10 +368,11 @@ function SensorDetailPanel({ dashboard, sensorKey }: { dashboard: SensorDashboar
       {/* Stats row */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
         <StatCard label="Current" value={sensor.current} unit={sensor.unit}
-          highlight={sensor.status === "alarm" || sensor.status === "trip" ? sensor.status_color : undefined} />
-        <StatCard label="7-Day Avg" value={sensor.stats?.avg_7d ?? "—"} unit={sensor.unit} />
-        <StatCard label="30-Day Max" value={sensor.stats?.max_30d ?? "—"} unit={sensor.unit} />
-        <StatCard label="30-Day Min" value={sensor.stats?.min_30d ?? "—"} unit={sensor.unit} />
+          highlight={isAlarmStatus(sensor.status) ? statusColor(sensor.status) : undefined} />
+        <StatCard label={sensor.stats?.recent_count ? `Avg of Last ${sensor.stats.recent_count}` : "Recent Avg"}
+          value={sensor.stats?.avg_recent ?? "—"} unit={sensor.unit} />
+        <StatCard label="History Max" value={sensor.stats?.max ?? "—"} unit={sensor.unit} />
+        <StatCard label="History Min" value={sensor.stats?.min ?? "—"} unit={sensor.unit} />
       </div>
 
       {/* Tabs */}
@@ -412,7 +381,6 @@ function SensorDetailPanel({ dashboard, sensorKey }: { dashboard: SensorDashboar
           {([
             { key: "maintenance", label: "Maintenance", icon: Wrench, count: dashboard.maintenance_records.length },
             { key: "incidents",   label: "Incidents",   icon: AlertTriangle, count: dashboard.incidents.length },
-            { key: "checklists",  label: "Checklists",  icon: ClipboardList, count: dashboard.checklists.length },
           ] as const).map(t => (
             <button
               key={t.key}
@@ -438,7 +406,6 @@ function SensorDetailPanel({ dashboard, sensorKey }: { dashboard: SensorDashboar
         <div className="p-4 max-h-72 overflow-y-auto">
           {tab === "maintenance" && <MaintenanceTab records={dashboard.maintenance_records} />}
           {tab === "incidents"   && <IncidentsTab   incidents={dashboard.incidents} />}
-          {tab === "checklists"  && <ChecklistsTab  checklists={dashboard.checklists} />}
         </div>
       </div>
     </div>
@@ -471,7 +438,7 @@ function SensorsPageInner() {
   useEffect(() => {
     listEquipment()
       .then(list => {
-        const active = list.filter(e => !e._discovered && (e.current_readings && Object.keys(e.current_readings).length > 0));
+        const active = list.filter(e => !e.discovered && (e.current_readings && Object.keys(e.current_readings).length > 0));
         setEquipmentList(active);
         if (!equipmentId && active.length > 0) setEquipmentId(active[0].id);
       })
@@ -510,7 +477,7 @@ function SensorsPageInner() {
           <p className="text-[10px] text-[#4b5563] mt-0.5">
             {dashboard
               ? `${sensorEntries.length} sensors · ${alarmCount} in alarm`
-              : "30-day history · anomaly detection · maintenance correlation"}
+              : "stored history · anomaly detection · maintenance correlation"}
           </p>
         </div>
         {/* Equipment selector */}
@@ -518,6 +485,7 @@ function SensorsPageInner() {
           <select
             value={equipmentId}
             onChange={e => setEquipmentId(e.target.value)}
+            aria-label="Equipment"
             className="bg-[#1a1a1a] border border-[#2a2a2a] rounded-lg pl-3 pr-8 py-1.5 text-xs text-[#f9f9f9] appearance-none focus:outline-none focus:border-amber-500/50"
           >
             {equipmentList.length === 0

@@ -8,8 +8,8 @@
  */
 "use client";
 
-import { useState, useRef, useCallback, useEffect } from "react";
-import { listEquipment, generateDocument, saveGeneratedDocument } from "@/lib/api";
+import { useState, useRef, useCallback } from "react";
+import { listEquipment, generateDocument, saveGeneratedDocument, errorText } from "@/lib/api";
 import type { Equipment, GeneratedDoc, DocumentCreateType } from "@/lib/types";
 import {
   X, Wrench, ClipboardList, BookOpen,
@@ -18,6 +18,7 @@ import {
 } from "lucide-react";
 import clsx from "clsx";
 import { toast } from "sonner";
+import { useDialogFocus } from "@/lib/useDialogFocus";
 
 // ── Document type definitions ─────────────────────────────────────────────────
 
@@ -140,71 +141,7 @@ export function CreateDocumentModal({ onClose, onSaved }: Props) {
   const [editedTitle, setEditedTitle] = useState("");
   const [saving, setSaving] = useState(false);
   const abortRef = useRef(false);
-  const modalRef = useRef<HTMLDivElement>(null);
-  const previousActiveElement = useRef<HTMLElement | null>(null);
-
-  // Focus trap initialization and restore on unmount
-  useEffect(() => {
-    previousActiveElement.current = document.activeElement as HTMLElement | null;
-
-    const timer = setTimeout(() => {
-      if (modalRef.current) {
-        const focusable = modalRef.current.querySelectorAll<HTMLElement>(
-          'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
-        );
-        if (focusable.length > 0) {
-          focusable[0].focus();
-        } else {
-          modalRef.current.focus();
-        }
-      }
-    }, 50);
-
-    return () => {
-      clearTimeout(timer);
-      previousActiveElement.current?.focus();
-    };
-  }, []);
-
-  // Keyboard Escape handler and Tab cycle focus trap
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        e.preventDefault();
-        onClose();
-        return;
-      }
-
-      if (e.key === "Tab") {
-        if (!modalRef.current) return;
-        const focusable = Array.from(
-          modalRef.current.querySelectorAll<HTMLElement>(
-            'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
-          )
-        ).filter(el => el.offsetParent !== null);
-
-        if (focusable.length === 0) return;
-
-        const first = focusable[0];
-        const last = focusable[focusable.length - 1];
-
-        if (e.shiftKey) {
-          if (document.activeElement === first || !modalRef.current.contains(document.activeElement)) {
-            e.preventDefault();
-            last.focus();
-          }
-        } else {
-          if (document.activeElement === last || !modalRef.current.contains(document.activeElement)) {
-            e.preventDefault();
-            first.focus();
-          }
-        }
-      }
-    };
-
-    window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [onClose]);
+  const modalRef = useDialogFocus<HTMLDivElement>(onClose);
 
   const loadEquipment = useCallback(async () => {
     if (eqLoaded) return;
@@ -253,11 +190,14 @@ export function CreateDocumentModal({ onClose, onSaved }: Props) {
           setEditedSections({ ...event.document.sections });
           setEditedTitle(event.document.title);
           setGenStatus("done");
+        } else if (event.step === "error") {
+          setGenStatus("error");
+          setGenMessage(event.message ?? "Nothing was generated.");
         }
       }
-    } catch {
+    } catch (err) {
       setGenStatus("error");
-      setGenMessage("Generation failed. Check your API key or try again.");
+      setGenMessage(errorText(err, "Generation failed."));
     }
   };
 
@@ -266,14 +206,8 @@ export function CreateDocumentModal({ onClose, onSaved }: Props) {
     setTimeout(() => goToStep3(), 100);
   };
 
-  const isPlaceholder = genDoc?.ai_generated === false || Boolean(genDoc?.title.includes("generation unavailable"));
-
   const handleSave = async () => {
     if (!genDoc || !selectedType) return;
-    if (isPlaceholder) {
-      toast.error("Cannot save document generated when AI is unavailable");
-      return;
-    }
     setSaving(true);
     try {
       await saveGeneratedDocument({
@@ -289,8 +223,8 @@ export function CreateDocumentModal({ onClose, onSaved }: Props) {
       toast.success(`${editedTitle} saved to knowledge base`);
       onSaved();
       onClose();
-    } catch {
-      toast.error("Failed to save document");
+    } catch (err) {
+      toast.error(errorText(err, "Failed to save document"));
     } finally {
       setSaving(false);
     }
@@ -491,12 +425,6 @@ export function CreateDocumentModal({ onClose, onSaved }: Props) {
             {/* Done — review sections */}
             {genStatus === "done" && genDoc && selectedType && (
               <div className="space-y-4">
-                {isPlaceholder && (
-                  <div className="flex items-center gap-2 p-3 bg-amber-500/10 border border-amber-500/30 rounded-lg text-xs text-amber-400">
-                    <AlertTriangle size={16} className="flex-shrink-0" />
-                    <span>AI generation was unavailable. Placeholder documents cannot be saved to the knowledge base.</span>
-                  </div>
-                )}
                 {/* Title */}
                 <div>
                   <div className="flex items-center gap-2 mb-1.5">
@@ -577,9 +505,8 @@ export function CreateDocumentModal({ onClose, onSaved }: Props) {
               </button>
               <button
                 onClick={handleSave}
-                disabled={saving || !editedTitle.trim() || isPlaceholder}
+                disabled={saving || !editedTitle.trim()}
                 className="flex items-center gap-2 px-4 py-2 bg-emerald-500/20 hover:bg-emerald-500/30 disabled:opacity-40 disabled:cursor-not-allowed text-emerald-400 rounded-lg text-sm font-medium border border-emerald-500/40 transition-colors"
-                title={isPlaceholder ? "Cannot save placeholder document" : undefined}
               >
                 {saving ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />}
                 Save to Knowledge Base

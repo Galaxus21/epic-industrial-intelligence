@@ -6,9 +6,10 @@
 // ─── Equipment ────────────────────────────────────────────────────────────────
 
 export interface SensorReading {
-  value: number;
+  // null for a sensor declared at registration that has not reported its first live reading yet
+  value: number | null;
   unit: string;
-  normal: number;
+  normal?: number;
   alarm?: number;
   trip?: number;
 }
@@ -29,11 +30,13 @@ export interface Equipment {
   installed_date?: string;
   technicians?: string[];
   current_readings?: Record<string, SensorReading>;
+  // Per reading: "trip" | "alarm" | "high" | "low" | "normal" | "no_reading", decided by the backend.
+  reading_status?: Record<string, string>;
   downstream_equipment?: string[];
-  // Auto-discovery metadata (present only on dynamically discovered equipment)
-  _discovered?: boolean;
-  _source_documents?: string[];
-  _manually_registered?: boolean;
+  // Registry bookkeeping columns (backend/app/db/models.py Equipment): discovered is true for equipment a document named
+  discovered?: boolean;
+  source_documents?: string[];
+  manually_registered?: boolean;
 }
 
 // ─── Incidents & Maintenance ──────────────────────────────────────────────────
@@ -100,6 +103,7 @@ export type QuerySourceType =
   | "knowledge_base"
   | "incident_history"
   | "maintenance_record"
+  | "compliance_record"
   | "ai_inference"
   | "feedback";
 
@@ -167,27 +171,9 @@ export type SessionTurn = {
   isRunning: boolean;
 };
 
-// ─── Saved Work Orders & Checklists ──────────────────────────────────────────
+// ─── Saved Work Orders ────────────────────────────────────────────────────────
 
 export type OpsStatus = "open" | "in_progress" | "completed";
-
-export interface ChecklistItem {
-  text: string;
-  checked: boolean;
-  notes: string;
-}
-
-export interface SavedChecklist {
-  id: string;
-  equipment_id: string;
-  query_text: string;
-  risk_level: string | null;
-  status: OpsStatus;
-  items: ChecklistItem[];
-  outcome_notes: string | null;
-  completed_at: string | null;
-  created_at: string;
-}
 
 export interface SavedWorkOrderStep {
   step: number;
@@ -281,15 +267,19 @@ export interface GeneratedDoc {
   doc_type: DocumentCreateType;
   sections: Record<string, string>;
   entities: DocumentEntities;
-  ai_generated?: boolean;
 }
+
+export type PipelineStepStatus = "pending" | "done" | "skipped";
 
 export interface DocumentDetail extends Document {
   entities: DocumentEntities | null;
   sections: Record<string, string> | null;
   char_count?: number;
   current_step?: string;
-  pipeline_steps?: Record<string, "pending" | "done">;
+  steps?: Record<string, PipelineStepStatus>;
+  step_detail?: string;
+  unresolved_equipment_ids?: string[];
+  held_entities?: string[];
   error?: string | null;
   mandatory_requirements?: string[];
   key_warnings?: string[];
