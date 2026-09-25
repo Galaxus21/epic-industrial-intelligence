@@ -13,6 +13,7 @@ Design rules:
 """
 from __future__ import annotations
 
+import math
 from typing import Any
 import numpy as np
 from sklearn.ensemble import IsolationForest
@@ -35,24 +36,22 @@ def _compute_rolling_median(values: np.ndarray, window: int = ROLLING_MEDIAN_WIN
     return medians
 
 
+def numericPoints(readings: list[Any]) -> list[dict[str, Any]]:
+    """The stored points whose value is a real number, unchanged. None, booleans, text, NaN and non-dicts are
+    dropped: history written by an older document upload can hold a figure it could not read (value None)."""
+    return [r for r in readings if isinstance(r, dict) and _isNumber(r.get("value"))]
+
+
 def filter_numeric_readings(readings: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """
-    Keep only valid numeric sensor readings.
-    Filters out None, booleans, non-dicts, and non-numeric values.
-    """
-    valid = []
-    for r in readings:
-        if not isinstance(r, dict):
-            continue
-        v = r.get("value")
-        # In Python, bool is a subclass of int (isinstance(True, int) is True).
-        # We must explicitly exclude booleans and None.
-        if v is not None and isinstance(v, (int, float)) and not isinstance(v, bool):
-            valid.append({
-                "ts": str(r.get("ts", "")),
-                "value": float(v),
-            })
-    return valid
+    """The numeric points reduced to {ts, value} for the model fit."""
+    return [{"ts": str(r.get("ts", "")), "value": float(r["value"])} for r in numericPoints(readings)]
+
+
+def _isNumber(value: Any) -> bool:
+    # bool is a subclass of int, so True would otherwise pass as 1.
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return False
+    return not math.isnan(value)
 
 
 def detect_series_anomalies(readings: list[dict[str, Any]]) -> list[dict[str, Any]] | None:

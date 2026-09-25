@@ -23,11 +23,14 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import math
 from datetime import datetime
 from typing import Any
 
 from app.core.config import settings
 from app.services import db_service as db
+from app.services.incidentWriter import saveIncident
+from app.services.sensorReadings import DOCUMENT_KEY, DOCUMENT_SOURCE, appendSensorHistory
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +41,8 @@ DEFAULT_INCIDENT_SEVERITY = "Medium"
 DEFECT_SEVERITY_LABELS = {"critical": "Critical", "major": "High", "minor": "Medium"}
 MAX_TITLE_CHARS = 120
 ROW_ID_DIGEST_CHARS = 8
+DOCUMENT_INCIDENT_PREFIX = "INC-DOC"
+DOCUMENT_DEFECT_PREFIX = "DEF-DOC"
 DATE_CHARS = len("YYYY-MM-DD")
 
 
@@ -56,25 +61,26 @@ async def _hold_for_review(doc_id: str, filename: str, entities: dict[str, Any])
     to accept (re-run with AUTO_REGISTER_ENTITIES=true, or create manually).
     """
     counts: dict[str, int] = {"linked_existing_equipment": 0, "pending_review": 0}
+    unknownEqIds: list[str] = []
     for eq_id in entities.get("equipment_ids", []) or []:
         try:
             if await db.get_equipment(eq_id):
                 await _safe_link(eq_id, doc_id, "DOCUMENTED_IN")
                 counts["linked_existing_equipment"] += 1
             else:
-                counts["pending_review"] += 1
+                unknownEqIds.append(eq_id)
         except Exception as exc:
             logger.warning("doc_entity_mapper: link check failed (%s): %s", eq_id, exc)
 
-    for key in ("incidents", "defects", "sensors"):
-        counts["pending_review"] += len(entities.get(key, []) or [])
-
-    if counts["pending_review"]:
+    held = _heldEntityLabels(unknownEqIds, entities)
+    counts["pending_review"] = len(held)
+    if held:
         await db.save_document({
             "id": doc_id,
             "entities_pending_review": True,
+            "held_entities": held,
             "pending_review_note": (
-                f"{counts['pending_review']} extracted entit(ies) held for review — "
+                f"{len(held)} extracted entit(ies) held for review — "
                 "auto-registration is disabled (AUTO_REGISTER_ENTITIES=false)"
             ),
         })
@@ -128,25 +134,6 @@ async def map_and_store(
                         await db.upsert_graph_node(
                             {"id": eq_id, "name": f"{eq_id}\n(Discovered)", "type": "equipment", "val": 16}
                         )
-                        # Seed default compliance for newly discovered equipment
-                        await db.upsert_compliance({
-                            "equipment_id": eq_id,
-                            "overall_score": 100,
-                            "status": "Compliant",
-                            "issues": [],
-                            "passed": [{"item": f"Auto-registered from document: {filename}"}],
-                        })
-                else:
-                    # Backfill null metrics on existing equipment
-                    updates: dict[str, Any] = {"id": eq_id}
-                    if existing.get("health_score") is None:
-                        updates["health_score"] = 100.0
-                    if existing.get("failure_probability") is None:
-                        updates["failure_probability"] = 5.0
-                    if existing.get("compliance_score") is None:
-                        updates["compliance_score"] = 100.0
-                    if len(updates) > 1:
-                        await db.upsert_equipment(updates)
                 await _safe_link(eq_id, doc_id, "DOCUMENTED_IN")
                 eq_id_map[eq_id] = eq_id
             except Exception as exc:
@@ -177,7 +164,7 @@ async def map_and_store(
     # ── 4. Sensor readings ────────────────────────────────────────────────────
     for sensor in entities.get("sensors", []):
         try:
-            await _store_sensor_reading(sensor)
+            await _store_sensor_reading(sensor, doc_id)
             counts["sensors"] += 1
         except Exception as exc:
             logger.warning("doc_entity_mapper: sensor store failed (%s): %s", sensor, exc)
@@ -218,28 +205,13 @@ async def _store_equipment(eq: dict[str, Any], source_doc: str) -> str:
             "status": eq.get("status") or "Discovered",
             "manufacturer": eq.get("manufacturer"),
             "model": eq.get("model"),
-            # Default metrics — assume healthy until data says otherwise
-            "health_score": 100.0,
-            "failure_probability": 5.0,
-            "compliance_score": 100.0,
-            "maintenance_due_days": 30,
+            # No health, failure probability, compliance or due date: nothing has measured this equipment yet.
             "criticality": eq.get("criticality") or "Unknown",
             "discovered": True,
             "source_documents": [source_doc],
         })
         label = f"{eq_id}\n{(eq.get('name') or 'Equipment')[:18]}"
         await db.upsert_graph_node({"id": eq_id, "name": label, "type": "equipment", "val": 16})
-        # Seed a default compliance record so the new equipment has one
-        try:
-            await db.upsert_compliance({
-                "equipment_id": eq_id,
-                "overall_score": 100,
-                "status": "Compliant",
-                "issues": [],
-                "passed": [{"item": f"Auto-registered from document: {source_doc}"}],
-            })
-        except Exception as exc:
-            logger.warning("Could not create default compliance record for %s: %s", eq_id, exc)
     else:
         # Enrich existing record with any new fields from document
         updates: dict[str, Any] = {"id": eq_id}
@@ -247,13 +219,6 @@ async def _store_equipment(eq: dict[str, Any], source_doc: str) -> str:
             val = eq.get(field)
             if val and not existing.get(field):
                 updates[field] = val
-        # Also backfill null metrics on existing discovered equipment
-        if existing.get("health_score") is None:
-            updates["health_score"] = 100.0
-        if existing.get("failure_probability") is None:
-            updates["failure_probability"] = 5.0
-        if existing.get("compliance_score") is None:
-            updates["compliance_score"] = 100.0
         if len(updates) > 1:
             await db.upsert_equipment(updates)
     return eq_id
@@ -278,8 +243,8 @@ async def _store_incident(inc: dict[str, Any], eq_id_map: dict, doc_id: str) -> 
     title = inc.get("title") or ref or "Incident extracted from document"
     stored: list[tuple[str, str]] = []
     for eq_id in _resolve_eq_ids(inc.get("equipment_ids", []), eq_id_map):
-        inc_id = _document_row_id("INC-DOC", doc_id, ref or title, eq_id)
-        await db.upsert_incident({
+        inc_id = _document_row_id(DOCUMENT_INCIDENT_PREFIX, doc_id, ref or title, eq_id)
+        await saveIncident({
             "id": inc_id,
             "equipment_id": eq_id,
             "date": (inc.get("occurred_at") or _TODAY())[:DATE_CHARS],
@@ -301,8 +266,8 @@ async def _store_defect(defect: dict[str, Any], eq_id_map: dict, doc_id: str) ->
         return None
     description = defect.get("description", "")
     title = (description or "Defect extracted from document")[:MAX_TITLE_CHARS]
-    def_id = _document_row_id("DEF-DOC", doc_id, description, eq_id)
-    await db.upsert_incident({
+    def_id = _document_row_id(DOCUMENT_DEFECT_PREFIX, doc_id, description, eq_id)
+    await saveIncident({
         "id": def_id,
         "equipment_id": eq_id,
         "date": _TODAY(),
@@ -317,8 +282,10 @@ async def _store_defect(defect: dict[str, Any], eq_id_map: dict, doc_id: str) ->
     return def_id
 
 
-async def _store_sensor_reading(sensor: dict[str, Any]) -> None:
-    """Append a sensor reading to SensorHistory.
+async def _store_sensor_reading(sensor: dict[str, Any], doc_id: str) -> None:
+    """Append a sensor reading to SensorHistory, naming the document it came from so deleting the document removes
+    it (sensorReadings.removeDocumentReadings). A figure that does not read as a number is not a reading, and every
+    consumer of the history compares numbers, so it is not stored.
 
     Does NOT mutate equipment.current_readings (reserved for live authenticated telemetry)."""
     eq_id = sensor.get("equipment_id", "").strip()
@@ -331,25 +298,18 @@ async def _store_sensor_reading(sensor: dict[str, Any]) -> None:
     try:
         value_float = float(str(value_str).split()[0])
     except (ValueError, IndexError):
-        value_float = None
+        return
+    if math.isnan(value_float):
+        return
 
     key = parameter.lower().replace(" ", "_")
 
-    # 1. Append to SensorHistory table
-    existing_history = await db.get_sensor_history(eq_id)
-    readings: list[dict[str, Any]] = list(existing_history.get(key, []))
-    readings.append({
-        "ts": ts,
-        "value": value_float,
-        "unit": unit,
-        "raw": value_str,
-        "source": "document_extraction",
+    await appendSensorHistory(eq_id, key, {
+        "ts": ts, "value": value_float, "unit": unit, "raw": value_str, "source": DOCUMENT_SOURCE,
+        DOCUMENT_KEY: doc_id,
     })
-    if len(readings) > 500:
-        readings = readings[-500:]
-    await db.upsert_sensor_history(eq_id, key, readings)
 
-    # 2. equipment.current_readings is intentionally NOT updated here.
+    # equipment.current_readings is intentionally NOT updated here.
     # Live equipment telemetry is reserved for authenticated telemetry ingress
     # to prevent document-extracted figures from triggering automated work orders.
 
@@ -364,6 +324,25 @@ async def _safe_link(source: str, target: str, label: str) -> None:
         await db.add_graph_link(source, target, label)
     except Exception as exc:
         logger.debug("doc_entity_mapper: graph link %s→%s (%s) failed: %s", source, target, label, exc)
+
+
+def _heldEntityLabels(unknownEqIds: list[str], entities: dict[str, Any]) -> list[str]:
+    """One readable line per distinct entity the review gate held back, for the document panel."""
+    labels = [f"Equipment {eq_id} (not registered)" for eq_id in unknownEqIds]
+    for inc in entities.get("incidents", []) or []:
+        labels.append(f"Incident: {_entityField(inc, 'title') or _entityField(inc, 'ref') or str(inc)}")
+    for defect in entities.get("defects", []) or []:
+        labels.append(f"Defect on {_entityField(defect, 'equipment_id') or '?'}: {_entityField(defect, 'description') or str(defect)}")
+    for sensor in entities.get("sensors", []) or []:
+        reading = " ".join(str(_entityField(sensor, key)) for key in ("equipment_id", "parameter", "value", "unit") if _entityField(sensor, key))
+        labels.append(f"Reading: {reading or str(sensor)}")
+    # A document that repeats a reading yields identical entities; listing the same line twice tells a reviewer nothing.
+    return list(dict.fromkeys(label[:MAX_TITLE_CHARS] for label in labels))
+
+
+def _entityField(entity: Any, key: str) -> Any:
+    # Extraction output is model text: an entity may arrive as a bare string instead of an object.
+    return entity.get(key) if isinstance(entity, dict) else None
 
 
 def _coerce(value: Any, valid: set, default: Any) -> Any:

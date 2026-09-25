@@ -9,7 +9,7 @@ synthesis call. Events are still streamed per-specialist so the UI can show
 progress, but there are no artificial delays.
 """
 import asyncio
-from datetime import date, datetime
+from datetime import datetime, timezone
 import json
 import logging
 from typing import AsyncIterator, Any
@@ -21,24 +21,34 @@ from app.services.llm_service import (
     classify_query_intent,
     synthesize_conversational_query,
 )
+from app.agents.queryScope import scopeStopEvents
 from app.agents.reactLoop import run_react_stream
 from app.services.knowledge_graph import graph_service as _graph_service
 from app.services import vector_service as vs
-from app.core.config import settings
+from app.services.providers import modelRegistry
 from app.services.alarmEvaluation import alarm_direction
+from app.services.complianceScore import complianceScore
 
 logger = logging.getLogger(__name__)
 
+queryFailedMessage = "The query failed on the server. The details are in the server log."
+NO_COMPLIANCE_RECORD = {"overall_score": None, "status": "No compliance record", "issues": [], "passed": [],
+                        "recorded": False}
+DOCUMENT_SEARCH_LIMIT = 8
+PROMPT_DOCUMENT_SECTIONS = 6
+SEMANTIC_SOURCE = "qdrant_semantic"
+
 
 def _is_task_overdue(r: dict[str, Any]) -> bool:
-    """Check if task status is explicitly Overdue or scheduled in the past."""
+    """Check if task status is explicitly Overdue or scheduled in the past. Stored dates are UTC calendar dates
+    (kb_ingestion._TODAY, demoTimeline), so the comparison uses today's UTC date, not the host's local one."""
     if r.get("status") == "Overdue":
         return True
     sched = r.get("scheduled_date") or r.get("date")
     if sched and r.get("status") in ("Scheduled", "Pending", "Open"):
         try:
             target_date = datetime.fromisoformat(str(sched).replace("Z", "")).date()
-            if target_date < date.today():
+            if target_date < datetime.now(timezone.utc).date():
                 return True
         except Exception:
             pass
@@ -82,12 +92,15 @@ async def _build_maintenance_context(equipment_id: str | None, query: str) -> di
 
 
 async def _build_compliance_context(equipment_id: str | None) -> dict[str, Any]:
+    """The stored compliance record. No record is reported as no record, never as a clean score."""
     if equipment_id:
         comp = await db.get_compliance(equipment_id)
         if not comp:
-            return {"overall_score": 100, "status": "OK", "issues": [], "passed": []}
+            return dict(NO_COMPLIANCE_RECORD)
     else:
         all_comp = await db.get_all_compliance()
+        if not all_comp:
+            return dict(NO_COMPLIANCE_RECORD)
         all_issues = []
         all_passed = []
         for c in all_comp:
@@ -97,15 +110,7 @@ async def _build_compliance_context(equipment_id: str | None) -> dict[str, Any]:
 
     issues = comp.get("issues") or []
     if issues:
-        sev_penalty = {"Critical": 20, "High": 10, "Medium": 5, "Low": 2}
-        penalty = sum(sev_penalty.get(i.get("severity", "Medium"), 5) for i in issues)
-        derived_score = max(0, 100 - penalty)
-        derived_status = (
-            "Compliant" if derived_score >= 90
-            else "Warning" if derived_score >= 75
-            else "Non-Compliant" if derived_score >= 50
-            else "Critical"
-        )
+        derived_score, derived_status = complianceScore(issues)
         comp = dict(comp)
         comp["derived_score"] = derived_score
         comp["derived_status"] = derived_status
@@ -140,59 +145,20 @@ async def _build_lessons_context(query: str, equipment_id: str | None) -> dict[s
 
 
 async def _build_documents_context(equipment_id: str | None, query: str) -> dict[str, Any]:
-    # Semantic document retrieval via Qdrant; falls back to keyword scan
-    qdrant_sections = await vs.search_relevant_docs(query, equipment_id=equipment_id, limit=8)
-    degraded = bool(qdrant_sections.get("degraded", False) if isinstance(qdrant_sections, dict) else False)
-    source = qdrant_sections.get("source", "keyword_fallback" if degraded else "qdrant_semantic") if isinstance(qdrant_sections, dict) else "unknown"
-    sec_items = qdrant_sections.get("items", list(qdrant_sections)) if isinstance(qdrant_sections, dict) else qdrant_sections
-
+    """Matching document sections, feedback first. The search falls back to keywords by itself, so an empty result
+    means nothing matched: it is reported as empty, and `degraded` is whatever the search reported."""
+    found = await vs.search_relevant_docs(query, equipment_id=equipment_id, limit=DOCUMENT_SEARCH_LIMIT)
     all_docs = await db.get_equipment_documents(equipment_id) if equipment_id else await db.list_all_documents()
-
-    if sec_items:
-        # Ensure feedback docs are always included (learning data)
-        feedback = [s for s in sec_items if s.get("type") == "feedback"]
-        others   = [s for s in sec_items if s.get("type") != "feedback"]
-        combined = (feedback + others[:6 - len(feedback)])[:8]
-        vector_used = bool(sec_items[0].get("_source", "").startswith("qdrant")) if sec_items else False
-        return {
-            "relevant_sections":    combined,
-            "total_docs_searched":  len(all_docs),
-            "feedback_count":       len(feedback),
-            "vector_search_used":   vector_used and not degraded,
-            "degraded":             degraded,
-            "source":               source,
-        }
-
-    # Pure PostgreSQL fallback (no Qdrant, no embeddings)
-    docs = all_docs
-    relevant_sections: list[dict[str, Any]] = []
-    query_lower = query.lower()
-    keywords = ["vibration", "bearing", "lubrication", "seal", "alarm", "maintenance", "inspection"]
-    triggered_keywords = [kw for kw in keywords if kw in query_lower]
-
-    for doc in docs:
-        for section_id, text in (doc.get("sections") or {}).items():
-            if any(kw in text.lower() for kw in triggered_keywords) or not triggered_keywords:
-                relevant_sections.append({
-                    "document": doc["name"],
-                    "doc_id":   doc["id"],
-                    "section":  section_id,
-                    "text":     text[:400],
-                    "type":     doc["type"],
-                    "is_feedback": doc["type"] == "feedback",
-                    "_source":  "pg_keyword",
-                })
-
-    feedback_sections = [s for s in relevant_sections if s.get("is_feedback")]
-    non_feedback      = [s for s in relevant_sections if not s.get("is_feedback")]
-    combined = (feedback_sections + non_feedback[:6 - len(feedback_sections)])[:8]
+    sections = list(found.get("items") or [])
+    feedback = [s for s in sections if s.get("type") == "feedback"]
+    others = [s for s in sections if s.get("type") != "feedback"]
     return {
-        "relevant_sections":   combined,
-        "total_docs_searched": len(docs),
-        "feedback_count":      len(feedback_sections),
-        "vector_search_used":  False,
-        "degraded":            True,
-        "source":              "keyword_fallback",
+        "relevant_sections":    (feedback + others)[:PROMPT_DOCUMENT_SECTIONS],
+        "total_docs_searched":  len(all_docs),
+        "feedback_count":       len(feedback),
+        "vector_search_used":   found.get("source") == SEMANTIC_SOURCE,
+        "degraded":             bool(found.get("degraded")),
+        "source":               found.get("source"),
     }
 
 
@@ -295,31 +261,12 @@ async def _run_query_stream_inner(
 
     # ── Deterministic equipment resolution before fan-out (WP-2) ────────────
     resolution = await resolve_equipment(query=query, equipment_id=equipment_id)
+    route = (mode or "").lower() or classify_query_intent(query)
 
-    if resolution.is_ambiguous:
-        candidates_str = ", ".join(resolution.candidates)
-        yield _event(
-            "equipment_brain",
-            "done",
-            f"Ambiguous query: matches {len(resolution.candidates)} equipment tags ({candidates_str}).",
-            data={"ambiguous": True, "candidates": resolution.candidates},
-        )
-        yield _event(
-            "synthesizer",
-            "done",
-            f"Query matches multiple equipment ({candidates_str}). Please clarify your target asset.",
-            data={
-                "response_type": "chat",
-                "message": (
-                    f"Your inquiry matches multiple assets in the plant: **{candidates_str}**.\n\n"
-                    "Please specify which equipment you would like to inspect."
-                ),
-                "ambiguous": True,
-                "candidates": resolution.candidates,
-                "risk_level": "Unknown",
-                "risk_summary": f"Ambiguous query matching: {candidates_str}",
-            },
-        )
+    stopEvents = scopeStopEvents(resolution, route)
+    if stopEvents:
+        for agent, status, message, data in stopEvents:
+            yield _event(agent, status, message, data=data)
         yield "data: [DONE]\n\n"
         return
 
@@ -405,8 +352,6 @@ async def _run_query_stream_inner(
     yield _event("equipment_brain", "active", first_brain_msg, data=first_brain_data)
 
     # ── 3-Way Query Routing (WP-4) ──────────────────────────────────────────
-    route = (mode or "").lower() or classify_query_intent(query)
-
     if route == "conversational":
         yield _event("synthesizer", "active", "Generating conversational response…")
         resp = await synthesize_conversational_query(query=query, history=history)
@@ -480,8 +425,8 @@ async def _run_query_stream_inner(
         docs_ctx,
     )
 
-    # ── 6. Synthesizer (GPT-4.1) ──────────────────────────────────────────────
-    yield _event("synthesizer", "active", f"Synthesizing final recommendation with {settings.openai_model}…")
+    # ── 6. Synthesizer ────────────────────────────────────────────────────────
+    yield _event("synthesizer", "active", f"Synthesizing final recommendation with {modelRegistry.getChatModel().modelName}…")
     final = await synthesize_query(
         equipment_id=target_equipment_id or "All Equipment (Plant-wide)",
         query=query,
@@ -525,7 +470,7 @@ async def run_query_stream(
             yield chunk
     except Exception as exc:
         logger.error("run_query_stream failed: %s", exc, exc_info=True)
-        payload = {"agent": "orchestrator", "status": "error", "message": f"Query failed: {str(exc)}", "data": {"error": str(exc)}}
+        payload = {"agent": "orchestrator", "status": "error", "message": queryFailedMessage}
         yield f"data: {json.dumps(payload)}\n\n"
     finally:
         if not done_emitted:

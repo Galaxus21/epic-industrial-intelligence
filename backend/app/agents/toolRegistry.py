@@ -1,239 +1,87 @@
 """
 EPIC — Agent Tool Registry (WP-4)
-Defines OpenAI-compatible tool schemas and asynchronous execution wrappers for
-verified platform services:
+Executes the ReAct investigator's tools (schemas in toolDefinitions.py) over verified platform services, and names
+the evidence each result contains. Every tool reads; none writes.
 1. get_maintenance_records (db_service)
 2. get_compliance (db_service)
 3. search_similar_incidents (vector_service)
 4. search_relevant_docs (vector_service)
 5. traverse_neighbours (knowledge_graph)
 6. detect_stored_anomalies (anomalyService / WP-1)
+7. get_equipment_status (db_service, with alarmEvaluation for each reading's status)
+
+A model-chosen number is clamped to the bounds its schema states, and an unusable one falls back to the default.
 """
 from __future__ import annotations
 
 import logging
-from typing import Any, Callable, Awaitable
+from typing import Any, Callable, Awaitable, Iterable
 
+from app.agents.toolDefinitions import (
+    DOCUMENT_LIMIT, INCIDENT_LIMIT, TOOL_DEFINITIONS, TRAVERSE_DEPTH, TRAVERSE_LIMIT, Bound,
+)
 from app.services import db_service as db
 from app.services import vector_service as vs
+from app.services.alarmEvaluation import readingStatuses
 from app.services.knowledge_graph import graph_service
 from app.services.anomalyService import detect_stored_anomalies
 
+__all__ = ["TOOL_DEFINITIONS", "TOOL_RUNNERS", "execute_tool", "extract_evidence_ids"]
+
 logger = logging.getLogger(__name__)
 
-# ─── OpenAI Tool Definitions ──────────────────────────────────────────────────
-
-TOOL_DEFINITIONS: list[dict[str, Any]] = [
-    {
-        "type": "function",
-        "function": {
-            "name": "get_maintenance_records",
-            "description": (
-                "Retrieve historical maintenance records, work orders, repair logs, "
-                "and scheduled tasks for an equipment item."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "equipment_id": {
-                        "type": "string",
-                        "description": "Equipment tag ID (e.g. 'P-101', 'K-401').",
-                    },
-                },
-                "required": ["equipment_id"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "get_compliance",
-            "description": (
-                "Retrieve regulatory compliance status, standards violations (OISD, ISO 10816, "
-                "SOP requirements), and active safety permits for an equipment item."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "equipment_id": {
-                        "type": "string",
-                        "description": "Equipment tag ID (e.g. 'P-101', 'K-401').",
-                    },
-                },
-                "required": ["equipment_id"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "search_similar_incidents",
-            "description": (
-                "Semantically search historical plant incident reports and failure logs "
-                "for matching symptoms, root causes, or lessons learned."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "query": {
-                        "type": "string",
-                        "description": "Search query describing symptoms, anomalies, or failure mechanisms.",
-                    },
-                    "equipment_id": {
-                        "type": "string",
-                        "description": "Optional equipment ID to narrow search scope.",
-                    },
-                    "limit": {
-                        "type": "integer",
-                        "description": "Maximum number of incidents to return (default: 4).",
-                        "default": 4,
-                    },
-                },
-                "required": ["query"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "search_relevant_docs",
-            "description": (
-                "Semantically search OEM technical manuals, operating procedures (SOPs), "
-                "inspection reports, and industry standards for relevant sections."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "query": {
-                        "type": "string",
-                        "description": "Search query for technical specifications, tolerances, or procedures.",
-                    },
-                    "equipment_id": {
-                        "type": "string",
-                        "description": "Optional equipment ID to narrow search scope.",
-                    },
-                    "limit": {
-                        "type": "integer",
-                        "description": "Maximum number of document sections to return (default: 6).",
-                        "default": 6,
-                    },
-                },
-                "required": ["query"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "traverse_neighbours",
-            "description": (
-                "Perform multi-hop graph traversal in the plant knowledge graph starting from "
-                "an equipment node to discover upstream/downstream connections, shared piping, and dependencies."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "equipment_id": {
-                        "type": "string",
-                        "description": "Starting equipment ID (e.g. 'P-101').",
-                    },
-                    "max_depth": {
-                        "type": "integer",
-                        "description": "Maximum traversal depth in hops (default: 2).",
-                        "default": 2,
-                    },
-                    "limit": {
-                        "type": "integer",
-                        "description": "Maximum connected nodes/links to return (default: 50).",
-                        "default": 50,
-                    },
-                },
-                "required": ["equipment_id"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "detect_stored_anomalies",
-            "description": (
-                "Execute ML statistical anomaly detection (multivariate Isolation Forest & IQR) "
-                "over stored historical telemetry to uncover anomalies and drift patterns."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "equipment_id": {
-                        "type": "string",
-                        "description": "Equipment ID to run anomaly detection against (e.g. 'P-101').",
-                    },
-                },
-                "required": ["equipment_id"],
-            },
-        },
-    },
-]
+EQUIPMENT_STATUS_KEYS = (
+    "id", "name", "type", "status", "criticality", "location",
+    "health_score", "failure_probability", "maintenance_due_days",
+)
 
 
 # ─── Tool Execution Wrappers ──────────────────────────────────────────────────
 
 async def _wrap_get_maintenance_records(args: dict[str, Any]) -> list[dict[str, Any]]:
-    equipment_id = str(args.get("equipment_id") or "").strip()
-    if not equipment_id:
-        raise ValueError("Missing required parameter 'equipment_id'")
-    return await db.get_maintenance_records(equipment_id)
+    return await db.get_maintenance_records(_requiredText(args, "equipment_id"))
 
 
 async def _wrap_get_compliance(args: dict[str, Any]) -> dict[str, Any] | None:
-    equipment_id = str(args.get("equipment_id") or "").strip()
-    if not equipment_id:
-        raise ValueError("Missing required parameter 'equipment_id'")
-    return await db.get_compliance(equipment_id)
+    return await db.get_compliance(_requiredText(args, "equipment_id"))
 
 
 async def _wrap_search_similar_incidents(args: dict[str, Any]) -> dict[str, Any]:
-    query = str(args.get("query") or "").strip()
-    if not query:
-        raise ValueError("Missing required parameter 'query'")
-    equipment_id = args.get("equipment_id")
-    if equipment_id:
-        equipment_id = str(equipment_id).strip() or None
-    limit = int(args.get("limit", 4))
-    res = await vs.search_similar_incidents(query=query, equipment_id=equipment_id, limit=limit)
-    if isinstance(res, dict):
-        return res
-    # Fallback to dict if unexpected type
-    return {"items": list(res), "source": "vector_service", "degraded": False}
+    return await vs.search_similar_incidents(
+        query=_requiredText(args, "query"), equipment_id=_optionalText(args, "equipment_id"),
+        limit=_boundedInt(args, "limit", INCIDENT_LIMIT),
+    )
 
 
 async def _wrap_search_relevant_docs(args: dict[str, Any]) -> dict[str, Any]:
-    query = str(args.get("query") or "").strip()
-    if not query:
-        raise ValueError("Missing required parameter 'query'")
-    equipment_id = args.get("equipment_id")
-    if equipment_id:
-        equipment_id = str(equipment_id).strip() or None
-    limit = int(args.get("limit", 6))
-    res = await vs.search_relevant_docs(query=query, equipment_id=equipment_id, limit=limit)
-    if isinstance(res, dict):
-        return res
-    return {"items": list(res), "source": "vector_service", "degraded": False}
+    return await vs.search_relevant_docs(
+        query=_requiredText(args, "query"), equipment_id=_optionalText(args, "equipment_id"),
+        limit=_boundedInt(args, "limit", DOCUMENT_LIMIT),
+    )
 
 
 async def _wrap_traverse_neighbours(args: dict[str, Any]) -> dict[str, Any]:
-    equipment_id = str(args.get("equipment_id") or "").strip()
-    if not equipment_id:
-        raise ValueError("Missing required parameter 'equipment_id'")
-    max_depth = int(args.get("max_depth", 2))
-    limit = int(args.get("limit", 50))
-    return await graph_service.traverse_neighbours(equipment_id=equipment_id, max_depth=max_depth, limit=limit)
+    return await graph_service.traverse_neighbours(
+        equipment_id=_requiredText(args, "equipment_id"),
+        max_depth=_boundedInt(args, "max_depth", TRAVERSE_DEPTH), limit=_boundedInt(args, "limit", TRAVERSE_LIMIT),
+    )
 
 
 async def _wrap_detect_stored_anomalies(args: dict[str, Any]) -> dict[str, Any]:
-    equipment_id = str(args.get("equipment_id") or "").strip()
-    if not equipment_id:
-        raise ValueError("Missing required parameter 'equipment_id'")
-    return await detect_stored_anomalies(equipment_id)
+    return await detect_stored_anomalies(_requiredText(args, "equipment_id"))
+
+
+async def _wrap_get_equipment_status(args: dict[str, Any]) -> dict[str, Any]:
+    equipmentId = _requiredText(args, "equipment_id")
+    equipment = await db.get_equipment(equipmentId)
+    if equipment is None:
+        return {"error": f"Equipment '{equipmentId}' not found"}
+    readings = equipment.get("current_readings") or {}
+    statuses = readingStatuses(readings)
+    return {
+        **{key: equipment.get(key) for key in EQUIPMENT_STATUS_KEYS},
+        "readings": {key: {**reading, "status": statuses[key]} for key, reading in readings.items() if key in statuses},
+    }
 
 
 TOOL_RUNNERS: dict[str, Callable[[dict[str, Any]], Awaitable[Any]]] = {
@@ -243,6 +91,7 @@ TOOL_RUNNERS: dict[str, Callable[[dict[str, Any]], Awaitable[Any]]] = {
     "search_relevant_docs": _wrap_search_relevant_docs,
     "traverse_neighbours": _wrap_traverse_neighbours,
     "detect_stored_anomalies": _wrap_detect_stored_anomalies,
+    "get_equipment_status": _wrap_get_equipment_status,
 }
 
 
@@ -259,61 +108,74 @@ async def execute_tool(tool_name: str, arguments: dict[str, Any]) -> Any:
         return {"error": f"Tool '{tool_name}' failed: {str(exc)}"}
 
 
-def get_tool_definitions() -> list[dict[str, Any]]:
-    """Return all tool definitions formatted for OpenAI tool calling."""
-    return TOOL_DEFINITIONS
-
-
 def extract_evidence_ids(tool_name: str, result: Any) -> set[str]:
     """Extract verifiable evidence identifiers (doc_id, incident_id, record id) from tool outputs."""
-    evidence_ids: set[str] = set()
-    if not result or isinstance(result, Exception):
-        return evidence_ids
+    if not result or isinstance(result, Exception) or (isinstance(result, dict) and "error" in result):
+        return set()
+    extractor = EVIDENCE_EXTRACTORS.get(tool_name)
+    return {str(identifier) for identifier in extractor(result) if identifier} if extractor else set()
 
-    if isinstance(result, dict) and "error" in result:
-        return evidence_ids
 
-    if tool_name == "get_maintenance_records":
-        if isinstance(result, list):
-            for r in result:
-                if isinstance(r, dict) and r.get("id"):
-                    evidence_ids.add(str(r["id"]))
-    elif tool_name == "get_compliance":
-        if isinstance(result, dict):
-            if result.get("id"):
-                evidence_ids.add(str(result["id"]))
-            if result.get("equipment_id"):
-                evidence_ids.add(str(result["equipment_id"]))
-            for issue in result.get("issues") or []:
-                if isinstance(issue, dict) and issue.get("code"):
-                    evidence_ids.add(str(issue["code"]))
-    elif tool_name == "search_similar_incidents":
-        items = result.get("items") if isinstance(result, dict) else result
-        if isinstance(items, list):
-            for inc in items:
-                if isinstance(inc, dict):
-                    inc_id = inc.get("incident_id") or inc.get("id")
-                    if inc_id:
-                        evidence_ids.add(str(inc_id))
-    elif tool_name == "search_relevant_docs":
-        items = result.get("items") if isinstance(result, dict) else result
-        if isinstance(items, list):
-            for doc in items:
-                if isinstance(doc, dict):
-                    if doc.get("ai_generated") is False or "generation unavailable" in (doc.get("document") or "").lower():
-                        continue
-                    did = doc.get("doc_id") or doc.get("id")
-                    if did:
-                        evidence_ids.add(str(did))
-                    if doc.get("document"):
-                        evidence_ids.add(str(doc["document"]))
-    elif tool_name == "traverse_neighbours":
-        if isinstance(result, dict):
-            for node in result.get("nodes") or []:
-                if isinstance(node, dict) and node.get("id"):
-                    evidence_ids.add(str(node["id"]))
-    elif tool_name == "detect_stored_anomalies":
-        if isinstance(result, dict) and result.get("equipment_id"):
-            evidence_ids.add(str(result["equipment_id"]))
+# ─── Evidence extraction, one function per tool result shape ─────────────────
 
-    return evidence_ids
+def _items(result: Any) -> list[dict[str, Any]]:
+    items = result.get("items") if isinstance(result, dict) else result
+    return [item for item in items if isinstance(item, dict)] if isinstance(items, list) else []
+
+
+def _recordIds(result: Any) -> Iterable[Any]:
+    return [record.get("id") for record in _items(result)]
+
+
+def _complianceIds(result: Any) -> Iterable[Any]:
+    if not isinstance(result, dict):
+        return []
+    issues = [issue for issue in result.get("issues") or [] if isinstance(issue, dict)]
+    return [result.get("id"), result.get("equipment_id"), *(issue.get("id") for issue in issues)]
+
+
+def _incidentIds(result: Any) -> Iterable[Any]:
+    return [incident.get("incident_id") or incident.get("id") for incident in _items(result)]
+
+
+def _documentIds(result: Any) -> Iterable[Any]:
+    return [value for doc in _items(result) for value in (doc.get("doc_id") or doc.get("id"), doc.get("document"))]
+
+
+def _nodeIds(result: Any) -> Iterable[Any]:
+    nodes = result.get("nodes") if isinstance(result, dict) else None
+    return [node.get("id") for node in nodes or [] if isinstance(node, dict)]
+
+
+def _equipmentId(result: Any) -> Iterable[Any]:
+    return [result.get("equipment_id") or result.get("id")] if isinstance(result, dict) else []
+
+
+EVIDENCE_EXTRACTORS: dict[str, Callable[[Any], Iterable[Any]]] = {
+    "get_maintenance_records": _recordIds,
+    "get_compliance": _complianceIds,
+    "search_similar_incidents": _incidentIds,
+    "search_relevant_docs": _documentIds,
+    "traverse_neighbours": _nodeIds,
+    "detect_stored_anomalies": _equipmentId,
+    "get_equipment_status": _equipmentId,
+}
+
+
+def _requiredText(args: dict[str, Any], key: str) -> str:
+    value = str(args.get(key) or "").strip()
+    if not value:
+        raise ValueError(f"Missing required parameter '{key}'")
+    return value
+
+
+def _optionalText(args: dict[str, Any], key: str) -> str | None:
+    return str(args.get(key) or "").strip() or None
+
+
+def _boundedInt(args: dict[str, Any], key: str, bound: Bound) -> int:
+    try:
+        value = int(args.get(key, bound.default))
+    except (TypeError, ValueError):
+        return bound.default
+    return min(max(value, bound.lowest), bound.highest)

@@ -5,8 +5,11 @@ to plant asset tags without LLM invocation.
 
 Resolution Order:
 1. Explicit sentinel: if equipment_id == "__all_equipment__", treat as explicit plant-wide request.
-2. Tag pattern: extract candidate tags using prefixes from db_service._TYPE_MAP.
-3. Exact ID match (case-insensitive) against db.get_all_equipment_list().
+2. Tag pattern: extract candidate tags using prefixes from db_service._TYPE_MAP. A tag that is not in the
+   equipment register resolves to UNKNOWN, never to a target: analysing it would dress up empty context as findings
+   about equipment that does not exist.
+3. Exact ID match (case-insensitive) against db.get_all_equipment_list(); an explicit equipment_id that is not
+   registered is UNKNOWN for the same reason.
 4. Name match: substring match against the equipment name field.
 5. No match: fallback to unresolved (plant-wide path).
 """
@@ -25,6 +28,7 @@ class ResolutionStatus(str, Enum):
     RESOLVED = "resolved"
     AMBIGUOUS = "ambiguous"
     UNRESOLVED = "unresolved"
+    UNKNOWN = "unknown"
 
 
 @dataclass
@@ -47,6 +51,10 @@ class ResolutionResult:
     @property
     def is_unresolved(self) -> bool:
         return self.status == ResolutionStatus.UNRESOLVED
+
+    @property
+    def is_unknown(self) -> bool:
+        return self.status == ResolutionStatus.UNKNOWN
 
 
 def get_valid_prefixes() -> list[str]:
@@ -125,11 +133,11 @@ async def resolve_equipment(
     found_tags = tag_pattern.findall(query_str)
 
     if found_tags:
-        # Map to canonical equipment ID from list if available, else normalize tag to upper
-        candidates = list(dict.fromkeys(
-            id_to_eq[t.upper()]["id"] if t.upper() in id_to_eq else t.upper()
-            for t in found_tags
-        ))
+        tags = list(dict.fromkeys(t.upper() for t in found_tags))
+        unknown = [tag for tag in tags if tag not in id_to_eq]
+        if unknown:
+            return ResolutionResult(status=ResolutionStatus.UNKNOWN, candidates=unknown)
+        candidates = [id_to_eq[tag]["id"] for tag in tags]
         if len(candidates) == 1:
             cid = candidates[0]
             eq = id_to_eq.get(cid.upper())
@@ -159,11 +167,9 @@ async def resolve_equipment(
     # If still no match from query, but explicit equipment_id was provided, check it
     if not matched_ids and eq_id_str:
         canonical_eq = id_to_eq.get(eq_id_str.upper())
-        if canonical_eq:
-            matched_ids.append(canonical_eq["id"])
-        elif "-" in eq_id_str or tag_pattern.match(eq_id_str):
-            # Explicit tag provided by caller that passes tag pattern
-            matched_ids.append(eq_id_str.upper())
+        if not canonical_eq:
+            return ResolutionResult(status=ResolutionStatus.UNKNOWN, candidates=[eq_id_str.upper()])
+        matched_ids.append(canonical_eq["id"])
 
     unique_matches = list(dict.fromkeys(matched_ids))
 

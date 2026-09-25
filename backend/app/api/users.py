@@ -1,8 +1,11 @@
 """
 EPIC — User Profiles API
 Manage users with role-based permissions for approval workflows.
-Roles: technician | supervisor | safety_officer | area_authority
-       authorized_person | manager | quality_inspector
+Roles: technician | supervisor | manager (app/core/roles.py)
+
+Only a manager can create users, change roles or reach admin, and the no-credentials exemption closes once any user
+exists. So the site must always keep an active manager: the first user created is a manager, and a change that would
+demote or deactivate the last active manager is refused (409).
 """
 import asyncio
 import uuid
@@ -18,7 +21,6 @@ from app.core.auth import (
     SESSION_COOKIE_NAME,
     TOKEN_TTL_SECONDS,
     get_current_user,
-    hash_password,
     async_hash_password,
     issue_token,
     require_roles,
@@ -26,16 +28,16 @@ from app.core.auth import (
     verify_password,
 )
 from app.core.config import settings
+from app.core.roles import ADMIN_ROLES, ALL_ROLES, ROLE_MANAGER
 from app.db.database import AsyncSessionLocal
 from app.db import models as m
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
-VALID_ROLES = {
-    "technician", "supervisor", "safety_officer",
-    "area_authority", "authorized_person", "manager", "quality_inspector",
-}
+CONFLICT = 409
+LAST_MANAGER_DETAIL = "At least one active manager must remain: promote another user to manager first"
+FIRST_USER_DETAIL = "The first user must be a manager, or nobody could manage users afterwards"
 
 
 class UserCreate(BaseModel):
@@ -162,10 +164,12 @@ async def list_users(role: str | None = None, active_only: bool = True):
 @router.post("", status_code=201)
 async def create_user(
     body: UserCreate,
-    user: m.UserProfile | None = Depends(require_roles_or_bootstrap("manager")),
+    user: m.UserProfile | None = Depends(require_roles_or_bootstrap(*ADMIN_ROLES)),
 ):
-    if body.role not in VALID_ROLES:
-        raise HTTPException(400, f"Invalid role. Choose from: {sorted(VALID_ROLES)}")
+    if body.role not in ALL_ROLES:
+        raise HTTPException(400, f"Invalid role. Choose from: {list(ALL_ROLES)}")
+    if user is None and body.role != ROLE_MANAGER:
+        raise HTTPException(400, FIRST_USER_DETAIL)
     uid = f"USR-{uuid.uuid4().hex[:8].upper()}"
     async with AsyncSessionLocal() as s:
         existing = (await s.execute(
@@ -201,16 +205,35 @@ async def get_user(user_id: str):
 async def update_user(
     user_id: str,
     body: UserUpdate,
-    user: m.UserProfile = Depends(require_roles("manager")),
+    user: m.UserProfile = Depends(require_roles(*ADMIN_ROLES)),
 ):
-    if body.role and body.role not in VALID_ROLES:
-        raise HTTPException(400, f"Invalid role. Choose from: {sorted(VALID_ROLES)}")
+    if body.role and body.role not in ALL_ROLES:
+        raise HTTPException(400, f"Invalid role. Choose from: {list(ALL_ROLES)}")
     async with AsyncSessionLocal() as s:
         obj = (await s.execute(select(m.UserProfile).where(m.UserProfile.id == user_id))).scalar_one_or_none()
         if not obj:
             raise HTTPException(404, "User not found")
-        for k, v in body.model_dump(exclude_none=True).items():
+        changes = body.model_dump(exclude_none=True)
+        if _removesAManager(obj, changes) and not await _anotherActiveManager(s, obj.id):
+            raise HTTPException(CONFLICT, LAST_MANAGER_DETAIL)
+        for k, v in changes.items():
             setattr(obj, k, v)
         await s.commit()
         await s.refresh(obj)
     return _row(obj)
+
+
+def _removesAManager(user: m.UserProfile, changes: dict[str, Any]) -> bool:
+    if user.role != ROLE_MANAGER or not user.is_active:
+        return False
+    return changes.get("role", ROLE_MANAGER) != ROLE_MANAGER or changes.get("is_active") is False
+
+
+async def _anotherActiveManager(session, userId: str) -> bool:
+    """Locks the active managers, so two concurrent demotions cannot each count the other as the one remaining."""
+    managers = (await session.execute(
+        select(m.UserProfile.id)
+        .where(m.UserProfile.role == ROLE_MANAGER, m.UserProfile.is_active == True)  # noqa: E712
+        .with_for_update()
+    )).scalars().all()
+    return any(managerId != userId for managerId in managers)

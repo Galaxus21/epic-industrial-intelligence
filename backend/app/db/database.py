@@ -45,10 +45,3 @@ if engine.dialect.name == "sqlite":
 
 class Base(DeclarativeBase):
     pass
-
-
-async def init_db() -> None:
-    """Create all tables if they don't already exist."""
-    from app.db import models  # noqa: F401 — registers models with Base metadata
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)

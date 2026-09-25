@@ -1,43 +1,50 @@
 """
 AI Operations Brain — Vector Search Service
-==========================================
-Wraps Qdrant for semantic similarity search.  Every document section and
-incident description is embedded and indexed so the agent pipeline finds
-relevant knowledge by *meaning*, not just keyword overlap.
+Wraps Qdrant for semantic similarity search: every document section and incident description is embedded and indexed
+so the agent pipeline finds relevant knowledge by *meaning*, not just keyword overlap.
 
-Collections
------------
-  "op_documents"  — document sections (text chunks, ≤600 chars each)
-  "op_incidents"  — incident/defect descriptions
-
-Embedding backend
------------------
-  Primary  : OpenAI text-embedding-3-small (1536 dims)
-  Fallback : PostgreSQL keyword search (NOT semantic). There is no sparse/BM25
-             index — without a working embedding client nothing is written to
-             Qdrant, and search quality degrades to keyword matching.
-
-Health honesty: is_active() only says Qdrant is reachable. Use get_health()
-to know whether a semantic index actually exists (embeddings configured AND
-points indexed) — a reachable Qdrant with empty collections is NOT a working
-semantic search.
+- Collections are named by vector size, so switching embedding model never mixes sizes: "op_documents_<dim>" holds
+  document sections (chunks of at most 600 characters), "op_incidents_<dim>" incident and defect descriptions.
+- Embeddings come from modelRegistry's EmbeddingModel: OpenAI text-embedding-3-small (1536 dims) with an
+  OPENAI_API_KEY, otherwise Ollama nomic-embed-text (768 dims). Without a working one nothing is written to Qdrant and
+  search falls back to PostgreSQL keyword matching (keywordSearch.py), which is NOT semantic.
+- This module keeps the one Qdrant connection and its health state; what it runs on the connected client is in
+  qdrantOperations.py.
+- Health honesty: is_active() only says Qdrant is reachable. get_health() says whether a semantic index exists
+  (embeddings work AND points are indexed); a reachable Qdrant with empty collections is NOT a working search.
 """
 from __future__ import annotations
 
-import hashlib
 import logging
 import time
-from typing import Any
+import uuid
+from typing import Any, Awaitable, Callable
 
 from app.core.config import settings
-from app.services.providers import EmbeddingProvider, get_embedding_provider
+from app.services import qdrantOperations as qdrant
+from app.services.keywordSearch import SearchResult, extract_fallback_keywords, keywordIncidents, keywordSections
+from app.services.providers import modelRegistry
+
+# Names this module exported before the keyword search moved out; callers still import them here.
+__all__ = [
+    "SearchResult", "extract_fallback_keywords", "clear_document_index", "clear_incident_index",
+    "delete_document_points", "delete_incident_points", "embeddings_available", "get_document_collection",
+    "get_health", "get_incident_collection", "get_vector_dim", "index_document_section", "index_incident",
+    "is_active", "reset_client_state", "search_relevant_docs", "search_similar_incidents", "set_probe_interval",
+]
 
 logger = logging.getLogger(__name__)
 
+POINT_ID_SCHEME = "epic"
+QDRANT_TIMEOUT_SECONDS = 5
+INCIDENT_PAYLOAD_DESCRIPTION_CHARS = 300
+DOCUMENT_PAYLOAD_TEXT_CHARS = 600
+HEALTH_PROBE_TEXT = "health probe"
+
 
 def get_vector_dim() -> int:
-    """Obtain active vector dimension dynamically from the embedding provider."""
-    return get_embedding_provider().dimension
+    """Obtain active vector dimension dynamically from the embedding model."""
+    return modelRegistry.getEmbeddingModel().dimension
 
 
 def get_incident_collection() -> str:
@@ -49,58 +56,6 @@ def get_document_collection() -> str:
     """Namespace document collection by vector dimension."""
     return f"op_documents_{get_vector_dim()}"
 
-
-# Dynamic module-level resolution for backwards compatibility
-def __getattr__(name: str) -> Any:
-    if name == "VECTOR_DIM":
-        return get_vector_dim()
-    if name == "_INCIDENT_COLLECTION":
-        return get_incident_collection()
-    if name == "_DOCUMENT_COLLECTION":
-        return get_document_collection()
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-
-
-
-MAX_FALLBACK_KEYWORDS = 32
-
-
-def extract_fallback_keywords(query: str, max_keywords: int = MAX_FALLBACK_KEYWORDS) -> list[str]:
-    """Extract, deduplicate, and cap fallback keywords from query while preserving order."""
-    seen: set[str] = set()
-    keywords: list[str] = []
-    for w in query.lower().split():
-        if len(w) > 3 and w not in seen:
-            seen.add(w)
-            keywords.append(w)
-            if len(keywords) >= max_keywords:
-                break
-    return keywords
-
-
-class SearchResult(dict):
-    """Degradation-aware search result payload that also behaves like a sequence of items.
-
-    Serializes to JSON as: {"items": [...], "source": "...", "degraded": bool}
-    Allows dict key lookups: res["degraded"], res["source"], res["items"]
-    Allows list operations: len(res), res[0], for item in res
-    """
-    def __init__(self, items: list[dict[str, Any]], source: str, degraded: bool):
-        super().__init__(items=items, source=source, degraded=degraded)
-
-    def __iter__(self):
-        return iter(self["items"])
-
-    def __len__(self):
-        return len(self["items"])
-
-    def __getitem__(self, k):
-        if isinstance(k, (int, slice)):
-            return self["items"][k]
-        return super().__getitem__(k)
-
-
-# ─── Qdrant client (lazy singleton with periodic re-probing) ────────────────
 
 _qdrant_client: Any = None
 _qdrant_ok: bool = False
@@ -123,66 +78,23 @@ def reset_client_state() -> None:
 
 
 async def _get_client():
+    """The connected client, or None while Qdrant is unreachable; after a failure it is probed again only once the
+    probe interval has passed. A collection of another vector size raises ValueError."""
     global _qdrant_client, _qdrant_ok, _last_qdrant_probe
     now = time.monotonic()
     if _qdrant_client is not None and _qdrant_ok:
         return _qdrant_client
-
-    # If previously failed, only re-probe after probe interval has elapsed
     if not _qdrant_ok and _last_qdrant_probe > 0 and (now - _last_qdrant_probe < _PROBE_INTERVAL_SECONDS):
         return None
 
     _last_qdrant_probe = now
     try:
         from qdrant_client import AsyncQdrantClient
-        from qdrant_client.models import Distance, VectorParams
 
-        client = AsyncQdrantClient(url=settings.qdrant_url, timeout=5)
-        # Ping by listing collections
+        client = AsyncQdrantClient(url=settings.qdrant_url, timeout=QDRANT_TIMEOUT_SECONDS)
         await client.get_collections()
-
-        expected_dim = get_vector_dim()
-        incident_col = get_incident_collection()
-        document_col = get_document_collection()
-
-        # Ensure both dimension-namespaced collections exist, and fail loudly on dimension mismatch
-        for col in (incident_col, document_col):
-            try:
-                info = await client.get_collection(col)
-                existing_dim = None
-                try:
-                    vectors_cfg = info.config.params.vectors
-                    if hasattr(vectors_cfg, "size"):
-                        existing_dim = int(vectors_cfg.size)
-                    elif isinstance(vectors_cfg, dict):
-                        for v in vectors_cfg.values():
-                            if hasattr(v, "size"):
-                                existing_dim = int(v.size)
-                                break
-                            elif isinstance(v, dict) and "size" in v:
-                                existing_dim = int(v["size"])
-                                break
-                except Exception:
-                    pass
-
-                if existing_dim is not None and existing_dim != expected_dim:
-                    raise ValueError(
-                        f"Qdrant collection '{col}' exists with dimension {existing_dim}, "
-                        f"but active embedding provider reports dimension {expected_dim}. "
-                        f"Aborting startup to prevent silent vector write failures."
-                    )
-            except ValueError:
-                raise
-            except Exception as exc:
-                logger.info("Collection %s missing (%s), creating collection", col, exc)
-                try:
-                    await client.create_collection(
-                        collection_name=col,
-                        vectors_config=VectorParams(size=expected_dim, distance=Distance.COSINE),
-                    )
-                except Exception as c_exc:
-                    logger.warning("Could not create collection %s: %s", col, c_exc, exc_info=True)
-
+        await qdrant.ensureCollections(client, (get_incident_collection(), get_document_collection()),
+                                       get_vector_dim())
         _qdrant_client = client
         _qdrant_ok = True
         logger.info("Qdrant connected at %s — semantic search active", settings.qdrant_url)
@@ -195,235 +107,113 @@ async def _get_client():
     return _qdrant_client if _qdrant_ok else None
 
 
-# ─── Embedding helper ─────────────────────────────────────────────────────────
-
 async def _embed(text: str) -> list[float] | None:
-    """Generate an embedding vector via active EmbeddingProvider. Returns None if unavailable."""
-    provider = get_embedding_provider()
+    """Generate an embedding vector via the active EmbeddingModel. Returns None if unavailable."""
+    embeddingModel = modelRegistry.getEmbeddingModel()
     try:
-        return await provider.embed_text(text)
+        return await embeddingModel.embed(text)
     except Exception as exc:
-        logger.warning("Embedding failed via %s: %s", type(provider).__name__, exc, exc_info=True)
+        logger.warning("Embedding failed via %s: %s", type(embeddingModel).__name__, exc, exc_info=True)
         return None
 
 
-
 def _stable_id(prefix: str, text: str) -> str:
-    """Deterministic point ID from a stable hash so we can upsert idempotently."""
-    h = hashlib.sha1(text.encode()).hexdigest()[:16]
-    return f"{prefix}-{h}"
+    """Deterministic point ID, so indexing the same item again overwrites it instead of duplicating it.
+
+    Qdrant accepts only unsigned integers and UUIDs as point IDs (its 400 reply to any other string: "valid values
+    are either an unsigned integer or a UUID", Qdrant v1.9.2, seen 2026-09-24), hence a name-based UUID.
+    """
+    return str(uuid.uuid5(uuid.NAMESPACE_URL, f"{POINT_ID_SCHEME}:{prefix}:{text}"))
 
 
-# ─── Public write API ─────────────────────────────────────────────────────────
-
-async def index_incident(
-    incident_id: str,
-    title: str,
-    description: str,
-    equipment_id: str,
-    severity: str = "",
-    date: str = "",
-) -> None:
+async def index_incident(incident_id: str, title: str, description: str, equipment_id: str, severity: str = "",
+                         date: str = "") -> None:
     """Index an incident for semantic similarity search."""
-    client = await _get_client()
-    if client is None:
-        return
-    text = f"{title}. {description}".strip()
-    vector = await _embed(text)
-    if vector is None:
-        logger.warning("Incident %s NOT semantically indexed — embeddings unavailable "
-                       "(keyword fallback only)", incident_id)
-        return
-    try:
-        from qdrant_client.models import PointStruct
-        await client.upsert(
-            collection_name=get_incident_collection(),
-            points=[PointStruct(
-                id=_stable_id("inc", incident_id),
-                vector=vector,
-                payload={
-                    "incident_id": incident_id,
-                    "title": title,
-                    "description": description[:300],
-                    "equipment_id": equipment_id,
-                    "severity": severity,
-                    "date": date,
-                },
-            )],
-        )
-    except Exception as exc:
-        logger.warning("Qdrant index_incident failed: %s", exc, exc_info=True)
+    payload = {
+        "incident_id": incident_id, "title": title, "description": description[:INCIDENT_PAYLOAD_DESCRIPTION_CHARS],
+        "equipment_id": equipment_id, "severity": severity, "date": date,
+    }
+    await _upsert(get_incident_collection, _stable_id("inc", incident_id), f"{title}. {description}".strip(),
+                  payload, f"Incident {incident_id}")
 
 
-async def index_document_section(
-    doc_id: str,
-    doc_name: str,
-    section_id: str,
-    text: str,
-    equipment_ids: list[str] | None = None,
-    doc_type: str = "",
-) -> None:
+async def index_document_section(doc_id: str, doc_name: str, section_id: str, text: str,
+                                 equipment_ids: list[str] | None = None, doc_type: str = "") -> None:
     """Index a document text chunk for retrieval during agent queries."""
+    payload = {
+        "doc_id": doc_id, "doc_name": doc_name, "section": section_id, "text": text[:DOCUMENT_PAYLOAD_TEXT_CHARS],
+        "equipment_ids": equipment_ids or [], "doc_type": doc_type,
+    }
+    await _upsert(get_document_collection, _stable_id("doc", f"{doc_id}-{section_id}"), text, payload,
+                  f"Document {doc_id} section {section_id}")
+
+
+async def _upsert(collection: Callable[[], str], pointId: str, text: str, payload: dict[str, Any], label: str) -> None:
     client = await _get_client()
     if client is None:
         return
     vector = await _embed(text)
     if vector is None:
-        logger.warning("Document %s section %s NOT semantically indexed — embeddings "
-                       "unavailable (keyword fallback only)", doc_id, section_id)
+        logger.warning("%s NOT semantically indexed — embeddings unavailable (keyword fallback only)", label)
         return
     try:
         from qdrant_client.models import PointStruct
-        await client.upsert(
-            collection_name=get_document_collection(),
-            points=[PointStruct(
-                id=_stable_id("doc", f"{doc_id}-{section_id}"),
-                vector=vector,
-                payload={
-                    "doc_id": doc_id,
-                    "doc_name": doc_name,
-                    "section": section_id,
-                    "text": text[:600],
-                    "equipment_ids": equipment_ids or [],
-                    "doc_type": doc_type,
-                },
-            )],
-        )
+
+        await client.upsert(collection_name=collection(),
+                            points=[PointStruct(id=pointId, vector=vector, payload=payload)])
     except Exception as exc:
-        logger.warning("Qdrant index_document_section failed: %s", exc, exc_info=True)
+        logger.warning("Qdrant upsert of %s failed: %s", label, exc, exc_info=True)
 
 
-# ─── Public read API ──────────────────────────────────────────────────────────
-
-async def search_similar_incidents(
-    query: str,
-    equipment_id: str | None = None,
-    limit: int = 4,
-) -> SearchResult:
+async def search_similar_incidents(query: str, equipment_id: str | None = None, limit: int = 4) -> SearchResult:
     """Semantic search for incidents similar to the query.
 
     Returns SearchResult dictionary payload:
       {"items": [...], "source": "qdrant_semantic"|"keyword_fallback", "degraded": bool}
-    Falls back to PostgreSQL keyword search when Qdrant/embeddings are unavailable.
+    A semantic hit comes back as the full incident row (root cause, lessons learned), because the Qdrant payload
+    only carries what the index needs. Falls back to PostgreSQL keyword search when semantic search finds nothing;
+    `degraded` is true only when semantic search could not run at all.
     """
-    client = await _get_client()
-
-    # ── Qdrant semantic path ──────────────────────────────────────────────────
-    if client is not None:
-        vector = await _embed(query)
-        if vector is not None:
-            try:
-                from qdrant_client.models import Filter, FieldCondition, MatchValue
-                q_filter = None
-                if equipment_id:
-                    q_filter = Filter(
-                        should=[
-                            FieldCondition(key="equipment_id", match=MatchValue(value=equipment_id)),
-                            FieldCondition(key="equipment_id", match=MatchValue(value="")),
-                        ]
-                    )
-                hits = await client.search(
-                    collection_name=get_incident_collection(),
-                    query_vector=vector,
-                    query_filter=q_filter,
-                    limit=limit,
-                    with_payload=True,
-                )
-                if hits:
-                    items = [
-                        {
-                            **h.payload,
-                            "_score": round(h.score, 3),
-                            "_source": "qdrant_semantic",
-                        }
-                        for h in hits
-                    ]
-                    return SearchResult(items=items, source="qdrant_semantic", degraded=False)
-            except Exception as exc:
-                logger.warning("Qdrant search failed, falling back to PostgreSQL: %s", exc, exc_info=True)
-                global _qdrant_ok
-                _qdrant_ok = False
-
-    # ── PostgreSQL keyword fallback ───────────────────────────────────────────
-    from app.services import db_service as db
-    keywords = extract_fallback_keywords(query)
-    results = await db.find_similar_incidents(keywords, exclude_equipment_id=None)
-    for r in results:
-        r["_source"] = "keyword_fallback"
-    return SearchResult(items=results[:limit], source="keyword_fallback", degraded=True)
+    hits = await _semanticHits(query, lambda client, vector: qdrant.incidentHits(
+        client, vector, get_incident_collection(), equipment_id, limit))
+    if hits:
+        return SearchResult(items=hits, source=qdrant.SEMANTIC_SOURCE, degraded=False)
+    return await keywordIncidents(query, limit, degraded=hits is None)
 
 
-async def search_relevant_docs(
-    query: str,
-    equipment_id: str | None = None,
-    limit: int = 6,
-) -> SearchResult:
+async def search_relevant_docs(query: str, equipment_id: str | None = None, limit: int = 6) -> SearchResult:
     """Semantic search for document sections relevant to the query.
 
     Returns SearchResult dictionary payload:
       {"items": [...], "source": "qdrant_semantic"|"keyword_fallback", "degraded": bool}
-    Falls back to equipment-scoped PostgreSQL document lookup.
+    Falls back to a PostgreSQL keyword lookup when semantic search finds nothing, over the equipment's documents or,
+    plant-wide, over every document; that also reaches documents the app writes itself, which are never
+    vector-indexed. A section matches only when it contains a query keyword. `degraded` is true only when semantic
+    search could not run at all.
     """
+    hits = await _semanticHits(query, lambda client, vector: qdrant.documentHits(
+        client, vector, get_document_collection(), equipment_id, limit))
+    if hits:
+        return SearchResult(items=hits, source=qdrant.SEMANTIC_SOURCE, degraded=False)
+    return await keywordSections(query, equipment_id, limit, degraded=hits is None)
+
+
+async def _semanticHits(
+    query: str, search: Callable[[Any, list[float]], Awaitable[list[dict[str, Any]]]],
+) -> list[dict[str, Any]] | None:
+    """What `search` finds for the query's vector: [] when it finds nothing, None when semantic search could not run.
+    A failed search marks Qdrant unhealthy, so the next searches skip it until the re-probe."""
+    global _qdrant_ok
     client = await _get_client()
-
-    # ── Qdrant semantic path ──────────────────────────────────────────────────
-    if client is not None:
-        vector = await _embed(query)
-        if vector is not None:
-            try:
-                from qdrant_client.models import Filter, FieldCondition, MatchValue
-                q_filter = None
-                if equipment_id:
-                    q_filter = Filter(
-                        should=[
-                            FieldCondition(key="equipment_ids", match=MatchValue(value=equipment_id)),
-                        ]
-                    )
-                hits = await client.search(
-                    collection_name=get_document_collection(),
-                    query_vector=vector,
-                    query_filter=q_filter,
-                    limit=limit,
-                    with_payload=True,
-                )
-                if hits:
-                    items = [
-                        {
-                            "doc_id":    h.payload.get("doc_id", ""),
-                            "document":  h.payload.get("doc_name", ""),
-                            "section":   h.payload.get("section", ""),
-                            "text":      h.payload.get("text", ""),
-                            "type":      h.payload.get("doc_type", ""),
-                            "_score":    round(h.score, 3),
-                            "_source":   "qdrant_semantic",
-                        }
-                        for h in hits
-                    ]
-                    return SearchResult(items=items, source="qdrant_semantic", degraded=False)
-            except Exception as exc:
-                logger.warning("Qdrant doc search failed, falling back to PostgreSQL: %s", exc, exc_info=True)
-                _qdrant_ok = False
-
-    # ── PostgreSQL fallback ───────────────────────────────────────────────────
-    sections: list[dict[str, Any]] = []
-    if equipment_id:
-        from app.services import db_service as db
-        docs = await db.get_equipment_documents(equipment_id)
-        fallback_kws = extract_fallback_keywords(query)
-        for doc in docs:
-            if doc.get("ai_generated") is False or "generation unavailable" in (doc.get("name") or "").lower():
-                continue
-            for sid, text in (doc.get("sections") or {}).items():
-                if any(w in text.lower() for w in fallback_kws):
-                    sections.append({
-                        "doc_id": doc["id"],
-                        "document": doc["name"],
-                        "section": sid,
-                        "text": text[:600],
-                        "type": doc.get("type", ""),
-                        "_source": "keyword_fallback",
-                    })
-    return SearchResult(items=sections[:limit], source="keyword_fallback", degraded=True)
+    vector = await _embed(query) if client is not None else None
+    if vector is None:
+        return None
+    try:
+        return await search(client, vector)
+    except Exception as exc:
+        logger.warning("Qdrant search failed, falling back to PostgreSQL: %s", exc, exc_info=True)
+        _qdrant_ok = False
+        return None
 
 
 async def delete_document_points(doc_id: str) -> int:
@@ -434,24 +224,38 @@ async def delete_document_points(doc_id: str) -> int:
     Returns the number of points deleted (0 when Qdrant is unavailable).
     """
     client = await _get_client()
+    return 0 if client is None else await qdrant.deleteDocumentPoints(client, get_document_collection(), doc_id)
+
+
+async def delete_incident_points(incident_ids: list[str]) -> int:
+    """Remove the indexed vectors of these incidents (called when the document that created them is deleted).
+
+    Point ids are derived from incident ids (_stable_id), so no search is needed. Returns how many were sent for
+    deletion, 0 when Qdrant is unavailable or there is nothing to delete.
+    """
+    client = await _get_client()
+    if client is None or not incident_ids:
+        return 0
+    points = [_stable_id("inc", incident_id) for incident_id in incident_ids]
+    return await qdrant.deletePoints(client, get_incident_collection(), points)
+
+
+async def clear_incident_index() -> int:
+    """Remove every incident point (called when the admin purge deletes incident rows)."""
+    return await _clear_collection(get_incident_collection())
+
+
+async def clear_document_index() -> int:
+    """Remove every document point (called when the admin purge deletes document rows)."""
+    return await _clear_collection(get_document_collection())
+
+
+async def _clear_collection(collection: str) -> int:
+    client = await _get_client()
     if client is None:
+        logger.warning("Qdrant unreachable: %s keeps its points after the purge", collection)
         return 0
-    try:
-        from qdrant_client.models import Filter, FieldCondition, MatchValue
-        flt = Filter(must=[FieldCondition(key="doc_id", match=MatchValue(value=doc_id))])
-        # Count first so we can report what was removed
-        count = 0
-        try:
-            res = await client.count(collection_name=get_document_collection(), count_filter=flt, exact=True)
-            count = res.count
-        except Exception as exc:
-            logger.warning("Could not count points before deletion for %s: %s", doc_id, exc)
-        await client.delete(collection_name=get_document_collection(), points_selector=flt)
-        logger.info("Deleted %d Qdrant point(s) for document %s", count, doc_id)
-        return count
-    except Exception as exc:
-        logger.warning("Qdrant delete_document_points failed for %s: %s", doc_id, exc, exc_info=True)
-        return 0
+    return await qdrant.clearCollection(client, collection)
 
 
 async def is_active() -> bool:
@@ -465,7 +269,7 @@ async def is_active() -> bool:
 
 async def embeddings_available() -> bool:
     """Return True only if an embedding call actually succeeds."""
-    return (await _embed("health probe")) is not None
+    return (await _embed(HEALTH_PROBE_TEXT)) is not None
 
 
 async def get_health() -> dict[str, Any]:
@@ -478,13 +282,7 @@ async def get_health() -> dict[str, Any]:
     client = await _get_client()
     qdrant_ok = client is not None
     embed_ok = await embeddings_available() if qdrant_ok else False
-    doc_points = inc_points = 0
-    if qdrant_ok:
-        try:
-            doc_points = (await client.count(collection_name=get_document_collection(), exact=True)).count
-            inc_points = (await client.count(collection_name=get_incident_collection(), exact=True)).count
-        except Exception as exc:
-            logger.warning("Failed to count collection points in get_health: %s", exc)
+    doc_points, inc_points = await qdrant.pointCounts(client, (get_document_collection(), get_incident_collection()))
     return {
         "qdrant_reachable": qdrant_ok,
         "embeddings_available": embed_ok,

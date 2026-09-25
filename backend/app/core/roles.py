@@ -1,30 +1,19 @@
 """
-EPIC — Standard Roles and Canonical Role Groupings
-Accepted role names (validated in app/api/users.py):
-technician, supervisor, safety_officer, area_authority, authorized_person, manager, quality_inspector
-Rights come from the route guards: FIELD_ROLES and APPROVER_ROLES below, and manager alone for
-administration. The other names authenticate and nothing more.
+EPIC — Roles
+Three roles, and the groups the route guards use:
+  technician  works the field steps                      (FIELD_ROLES)
+  supervisor  works the field steps and approves changes (FIELD_ROLES, APPROVER_ROLES)
+  manager     approves changes and administers           (APPROVER_ROLES, ADMIN_ROLES)
+The frontend mirrors these groups in frontend/src/lib/roles.ts; keep the two identical.
 """
 
-# Valid individual role names
 ROLE_TECHNICIAN = "technician"
 ROLE_SUPERVISOR = "supervisor"
-ROLE_SAFETY_OFFICER = "safety_officer"
-ROLE_AREA_AUTHORITY = "area_authority"
-ROLE_AUTHORIZED_PERSON = "authorized_person"
 ROLE_MANAGER = "manager"
-ROLE_QUALITY_INSPECTOR = "quality_inspector"
 
-ALL_ROLES = (
-    ROLE_TECHNICIAN,
-    ROLE_SUPERVISOR,
-    ROLE_SAFETY_OFFICER,
-    ROLE_AREA_AUTHORITY,
-    ROLE_AUTHORIZED_PERSON,
-    ROLE_MANAGER,
-    ROLE_QUALITY_INSPECTOR,
-)
+ALL_ROLES = (ROLE_TECHNICIAN, ROLE_SUPERVISOR, ROLE_MANAGER)
 
 # Role groups used by the route guards (require_roles)
-APPROVER_ROLES = ("supervisor", "manager")
-FIELD_ROLES = ("technician", "supervisor")
+FIELD_ROLES = (ROLE_TECHNICIAN, ROLE_SUPERVISOR)
+APPROVER_ROLES = (ROLE_SUPERVISOR, ROLE_MANAGER)
+ADMIN_ROLES = (ROLE_MANAGER,)

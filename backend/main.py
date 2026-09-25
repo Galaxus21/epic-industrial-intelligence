@@ -8,12 +8,12 @@ from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 
 from app.core.config import settings
-from app.api import admin, agents, audit, documents, equipment, knowledge_graph, maintenance, rca, sensors, users, work_orders
+from app.api import admin, agents, documents, equipment, knowledge_graph, maintenance, sensors, users, work_orders
+from app.services.demoAccount import ensureDemoAccounts, refuseActiveDemoAccountInProduction
 from app.services.threshold_monitor import run_threshold_monitor
 
 # Values a deployment inherits by leaving the built-in default or copying .env.example unedited.
 PLACEHOLDER_SECRET_KEYS = frozenset({"dev-insecure-secret-change-me", "change-me-generate-a-real-secret"})
-PLACEHOLDER_OPENAI_API_KEYS = frozenset({"sk-proj-your-key-here"})
 
 
 def _verify_schema_is_migrated() -> None:
@@ -62,8 +62,6 @@ def _validate_production_config() -> None:
         problems.append("SECRET_KEY is still a placeholder (built-in default or .env.example value)")
     if settings.database_url.startswith("sqlite"):
         problems.append("DATABASE_URL points at SQLite — use PostgreSQL in production")
-    if settings.openai_api_key in PLACEHOLDER_OPENAI_API_KEYS or settings.openai_api_key.startswith("sk-your"):
-        problems.append("OPENAI_API_KEY is the placeholder value from .env.example")
     if problems:
         raise RuntimeError(
             "Refusing to start in production with unsafe configuration: " + "; ".join(problems)
@@ -72,9 +70,11 @@ def _validate_production_config() -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Verify the schema is migrated, then serve."""
+    """Verify the schema is migrated, make sure the demo sign-in matches the environment, then serve."""
     _validate_production_config()
     _verify_schema_is_migrated()
+    await refuseActiveDemoAccountInProduction()
+    await ensureDemoAccounts()
     # Launch autonomous threshold monitor in the background
     monitor_task = asyncio.create_task(run_threshold_monitor())
     yield
@@ -112,9 +112,7 @@ app.include_router(agents.router,                  prefix="/api/v1/agents",     
 app.include_router(documents.router,               prefix="/api/v1/documents",            tags=["documents"])
 app.include_router(knowledge_graph.router,         prefix="/api/v1/knowledge-graph",      tags=["knowledge-graph"])
 app.include_router(work_orders.router,             prefix="/api/v1/ops",                  tags=["work-orders"])
-app.include_router(rca.router,                     prefix="/api/v1/rca",                  tags=["rca"])
 app.include_router(sensors.router,                 prefix="/api/v1/sensors",              tags=["sensors"])
-app.include_router(audit.router,                   prefix="/api/v1/audit",                tags=["audit"])
 app.include_router(users.router,                   prefix="/api/v1/users",                tags=["users"])
 app.include_router(admin.router,                   prefix="/api/v1/admin",               tags=["admin"])
 app.include_router(maintenance.router,             prefix="/api/v1/maintenance",          tags=["maintenance"])

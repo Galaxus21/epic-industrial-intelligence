@@ -14,6 +14,7 @@ from sqlalchemy import select, delete, or_, cast, String
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.database import AsyncSessionLocal
+from app.core.roles import FIELD_ROLES
 from app.db import models as m
 
 # ── Equipment tag classification (ISA-5.1 prefix patterns) ──────────────────
@@ -130,63 +131,15 @@ async def get_all_equipment_list() -> list[dict[str, Any]]:
     return out
 
 
-async def update_equipment_sensor_values(
-    equipment_id: str,
-    sensor_values: dict[str, float],
-) -> None:
-    """
-    Update the `.value` of specific sensors in equipment.current_readings.
-    Preserves all existing metadata (unit, normal, alarm, trip).
-    Only updates sensors whose keys already exist OR are explicitly provided.
-
-    Called by the authenticated telemetry ingress (POST /api/v1/sensors/{id}/readings) so that
-    live readings visible in the AI chat and equipment detail reflect the
-    newly entered data.
-    """
-    if not sensor_values:
-        return
-    async with _session() as s:
-        row = await s.get(m.Equipment, equipment_id)
-        if row is None:
-            return
-        readings: dict[str, Any] = dict(row.current_readings or {})
-        updated = False
-        for key, val in sensor_values.items():
-            if val is None:
-                continue
-            if key in readings and isinstance(readings[key], dict):
-                # Preserve all metadata, only update value
-                readings[key] = {**readings[key], "value": float(val)}
-                updated = True
-            else:
-                # Sensor not previously tracked — store bare value dict
-                readings[key] = {"value": float(val)}
-                updated = True
-        if updated:
-            row.current_readings = readings
-            await s.commit()
-
-
-async def get_discovered_equipment() -> list[dict[str, Any]]:
-    async with _session() as s:
-        result = await s.execute(select(m.Equipment).where(m.Equipment.discovered == True))
-        rows = result.scalars().all()
-    out = []
-    for row in rows:
-        d = _row_to_dict(row)
-        if d.get("extra"):
-            d.update(d.pop("extra"))
-        out.append(d)
-    return out
-
-
 async def register_equipment(
     equipment_id: str,
     source_document: str,
     eq_type: str = "Unknown Equipment",
     extra_context: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
-    """Auto-register a new equipment ID discovered from a document upload."""
+    """Auto-register a new equipment ID discovered from a document upload. Its health, failure probability,
+    compliance and maintenance due date stay unknown (None) until something measures them, as for equipment registered
+    through POST /api/v1/equipment: a document naming a tag says nothing about its condition."""
     from datetime import datetime
 
     if _is_instrument(equipment_id):
@@ -209,10 +162,6 @@ async def register_equipment(
             name=f"{equipment_id} ({inferred})",
             type=inferred,
             location="Pending — see source document",
-            health_score=100.0,
-            failure_probability=5.0,
-            compliance_score=100.0,
-            maintenance_due_days=30,
             criticality="Unknown",
             status="Discovered",
             discovered=True,
@@ -263,6 +212,10 @@ async def upsert_equipment(data: dict[str, Any]) -> None:
 # Incidents
 # ─────────────────────────────────────────────────────────────────────────────
 
+# Each keyword adds three ILIKE clauses to one OR; a long query without a cap built
+# a statement SQLite could not run and killed the answer stream (F17).
+maxSearchKeywords = 32
+
 async def get_equipment_incidents(equipment_id: str) -> list[dict[str, Any]]:
     async with _session() as s:
         result = await s.execute(
@@ -278,6 +231,16 @@ async def get_equipment_incidents(equipment_id: str) -> list[dict[str, Any]]:
     return out
 
 
+async def get_incidents_by_ids(incident_ids: list[str]) -> dict[str, dict[str, Any]]:
+    """Full incident rows keyed by id, for turning search hits back into records."""
+    if not incident_ids:
+        return {}
+    async with _session() as s:
+        result = await s.execute(select(m.Incident).where(m.Incident.id.in_(incident_ids)))
+        rows = result.scalars().all()
+    return {row.id: _row_to_dict(row) for row in rows}
+
+
 async def find_similar_incidents(
     query_keywords: list[str],
     exclude_equipment_id: str | None = None,
@@ -289,7 +252,7 @@ async def find_similar_incidents(
     if not query_keywords:
         return []
 
-    clean_kws = [kw.strip() for kw in query_keywords if kw and kw.strip()][:32]
+    clean_kws = [kw.strip() for kw in query_keywords if kw and kw.strip()][:maxSearchKeywords]
     if not clean_kws:
         return []
 
@@ -343,7 +306,9 @@ async def upsert_incident(data: dict[str, Any]) -> None:
 async def get_maintenance_records(equipment_id: str) -> list[dict[str, Any]]:
     async with _session() as s:
         result = await s.execute(
-            select(m.MaintenanceRecord).where(m.MaintenanceRecord.equipment_id == equipment_id)
+            select(m.MaintenanceRecord)
+            .where(m.MaintenanceRecord.equipment_id == equipment_id)
+            .order_by(m.MaintenanceRecord.date.desc().nullslast(), m.MaintenanceRecord.id)
         )
         rows = result.scalars().all()
     out = []
@@ -521,17 +486,6 @@ async def get_equipment_spare_parts(equipment_id: str) -> list[dict[str, Any]]:
     ]
 
 
-async def upsert_spare_part(data: dict[str, Any]) -> None:
-    async with _session() as s:
-        existing = await s.get(m.SparePart, data["id"])
-        if existing:
-            for k, v in data.items():
-                setattr(existing, k, v)
-        else:
-            s.add(m.SparePart(**data))
-        await s.commit()
-
-
 # ─────────────────────────────────────────────────────────────────────────────
 # Technicians
 # ─────────────────────────────────────────────────────────────────────────────
@@ -539,14 +493,13 @@ async def upsert_spare_part(data: dict[str, Any]) -> None:
 async def get_equipment_technicians(equipment_id: str) -> list[dict[str, Any]]:
     """
     Return technicians for an equipment.
-    Merges the legacy Technician seed table (equipment_ids-keyed) with live
-    UserProfile rows that have a technical role, so new users created via
-    /api/v1/users are automatically surfaced here.
+    Starts from the technician roster rows assigned to this equipment, then adds every active
+    user with a field role (so new users created via /api/v1/users are surfaced automatically),
+    skipping anyone the roster already lists by name.
     """
     results: dict[str, dict[str, Any]] = {}
 
     async with _session() as s:
-        # 1. Legacy Technician seed data
         tech_rows = (await s.execute(select(m.Technician))).scalars().all()
         for row in tech_rows:
             if equipment_id in (row.equipment_ids or []):
@@ -555,43 +508,27 @@ async def get_equipment_technicians(equipment_id: str) -> list[dict[str, Any]]:
                     d.update(d.pop("extra"))
                 results[row.id] = d
 
-        # 2. Live UserProfile rows with technical roles
-        technical_roles = {"technician", "supervisor", "safety_officer",
-                           "area_authority", "authorized_person"}
         up_rows = (await s.execute(
             select(m.UserProfile).where(
-                m.UserProfile.role.in_(list(technical_roles)),
+                m.UserProfile.role.in_(FIELD_ROLES),
                 m.UserProfile.is_active == True,  # noqa: E712
             )
         )).scalars().all()
+        listedNames = {entry.get("name") for entry in results.values()}
         for row in up_rows:
-            # Include this user if they are not already in results (avoid dups).
-            uid = f"USR-{row.id}"
-            if uid not in results:
-                results[uid] = {
-                    "id":         uid,
-                    "name":       row.name,
-                    "role":       row.role,
-                    "contact":    row.email or "",
-                    "certifications": row.certifications or [],
-                    "available":  True,
-                    "_source":    "user_profile",
-                }
+            if row.name in listedNames or row.id in results:
+                continue
+            results[row.id] = {
+                "id":         row.id,
+                "name":       row.name,
+                "role":       row.role,
+                "contact":    row.email or "",
+                "certifications": row.certifications or [],
+                "available":  True,
+                "_source":    "user_profile",
+            }
 
     return list(results.values())
-
-
-async def upsert_technician(data: dict[str, Any]) -> None:
-    async with _session() as s:
-        existing = await s.get(m.Technician, data["id"])
-        mapped, extra = _split_extra(data, m.Technician)
-        if existing:
-            _apply_upsert(existing, mapped, extra)
-        else:
-            if extra:
-                mapped["extra"] = extra
-            s.add(m.Technician(**mapped))
-        await s.commit()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -748,15 +685,6 @@ async def upsert_sensor_history(equipment_id: str, sensor_key: str, readings: li
 # Work Orders (lightweight helpers used by threshold monitor)
 # ─────────────────────────────────────────────────────────────────────────────
 
-async def get_work_orders(equipment_id: str | None = None) -> list[dict[str, Any]]:
-    async with _session() as s:
-        q = select(m.SavedWorkOrder).order_by(m.SavedWorkOrder.created_at.desc())
-        if equipment_id:
-            q = q.where(m.SavedWorkOrder.equipment_id == equipment_id)
-        result = await s.execute(q)
-        return [_row_to_dict(r) for r in result.scalars().all()]
-
-
 async def create_work_order(data: dict[str, Any]) -> str:
     """Insert a work order row and return its ID. Used by threshold monitor."""
     import uuid as _uuid
@@ -813,7 +741,8 @@ async def get_equipment_brain(equipment_id: str) -> dict[str, Any]:
         "equipment": eq,
         "incidents": incidents,
         "maintenance_records": maintenance,
-        "documents": [{"id": d["id"], "name": d["name"], "type": d["type"]} for d in documents],
+        "documents": [{"id": d["id"], "name": d["name"], "type": d["type"], "origin": d.get("origin")}
+                      for d in documents],
         "technicians": techs,
         "spare_parts": parts,
         "compliance": compliance,

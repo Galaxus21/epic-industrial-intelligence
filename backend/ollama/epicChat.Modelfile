@@ -1,0 +1,20 @@
+# The EPIC chat model: Qwen 2.5 7B (Apache 2.0; Ollama lists the "tools" capability multi-hop questions need) with a
+# context window that holds the whole synthesis prompt and the longest reply.
+#
+# Ollama's default context is 4096 tokens (https://docs.ollama.com/faq, checked 2026-09-24). An earlier synthesis
+# prompt of 6,774 tokens was silently cut to 2,050 ("truncating input prompt" in its server log), so the model answered
+# from a fragment of the evidence. The OpenAI-compatible API the backend uses cannot set the context size per request;
+# a Modelfile is the documented way (https://docs.ollama.com/api/openai-compatibility, checked 2026-09-24).
+#
+# The demo P-101 synthesis prompt with a full conversation history measured 7,157 tokens (Ollama prompt_tokens,
+# 2026-09-25). The backend caps a reply at 2,500 tokens, so the window needs 9,657; 10240 leaves 583 spare. Qwen 2.5 7B
+# keeps 4 key-value heads in each of 28 layers, so with this window 76% of the model stayed on a 6 GB laptop GPU
+# (Ollama /api/ps, 2026-09-25).
+#
+# It replaced llama3.1 8B, which counts the same prompt as 6,460 tokens and ran with a 9,216-token window; README
+# "Known limits" says how it was chosen.
+#
+# Create it once, after `ollama pull qwen2.5:7b`:
+#   ollama create epic-qwen2.5 -f backend/ollama/epicChat.Modelfile
+FROM qwen2.5:7b
+PARAMETER num_ctx 10240

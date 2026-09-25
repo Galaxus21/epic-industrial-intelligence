@@ -10,11 +10,17 @@ from functools import lru_cache
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
-    # LLM
+    # LLM — OpenAI when openai_api_key is set, otherwise Ollama (app/services/providers/modelRegistry.py)
     openai_api_key: str = ""
     openai_model: str = "gpt-4.1"
-    llm_provider: str = "openai"
-    embedding_provider: str = "openai"
+    ollama_base_url: str = "http://localhost:11434"
+    # qwen2.5:7b carries Ollama's "tools" capability (`ollama show qwen2.5:7b`, checked 2026-09-25); epic-qwen2.5 is
+    # that model with a context window large enough for our prompts (backend/ollama/epicChat.Modelfile).
+    ollama_chat_model: str = "epic-qwen2.5"
+    ollama_embedding_model: str = "nomic-embed-text"
+    # nomic-embed-text outputs 768 dimensions (https://huggingface.co/nomic-ai/nomic-embed-text-v1.5,
+    # checked 2026-09-24); a vector of any other size is refused before it reaches Qdrant.
+    ollama_embedding_dimension: int = 768
 
     # Qdrant
     qdrant_url: str = "http://localhost:6333"

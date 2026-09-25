@@ -26,7 +26,7 @@ from app.db import models as m
 from app.db.database import AsyncSessionLocal
 from app.services import db_service as db
 from app.services.audit import record as audit_record
-from app.services.alarmEvaluation import is_in_alarm, is_in_trip, alarm_direction
+from app.services.alarmEvaluation import alarm_direction, is_in_alarm, is_in_trip
 
 logger = logging.getLogger(__name__)
 
@@ -89,10 +89,7 @@ def _safety_precautions(eq: dict[str, Any]) -> list[str]:
 def _build_work_order(eq: dict[str, Any], anomalies: list[dict[str, Any]]) -> dict[str, Any]:
     eq_id = eq["id"]
     summary = _anomaly_summary(anomalies)
-    trip_breach = any(
-        a.get("value") is not None and a.get("trip") is not None and a["value"] >= a["trip"]
-        for a in anomalies
-    )
+    trip_breach = any(a["tripped"] for a in anomalies)
     steps = _procedure_steps(eq_id, summary)
     total_minutes = sum(step["expected_duration_minutes"] for step in steps)
     return {
@@ -148,6 +145,7 @@ def _collect_anomalies(readings: dict) -> list[dict]:
             "unit": reading.get("unit", ""),
             "alarm": alarm,
             "trip": reading.get("trip"),
+            "tripped": is_in_trip(val, reading),
             "alarm_direction": alarm_direction(reading),
         })
     return anomalies
@@ -163,7 +161,7 @@ async def _check_thresholds() -> None:
         return
 
     for eq in all_eq:
-        if eq.get("_discovered"):
+        if eq.get("discovered"):
             continue
         anomalies = _collect_anomalies(eq.get("current_readings") or {})
         if not anomalies or eq["id"] in open_wo_eq_ids:

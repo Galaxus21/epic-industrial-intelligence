@@ -1,113 +1,48 @@
 """
-EPIC ? OpenAI LLM & Embedding Provider
-Implements LLMProvider and EmbeddingProvider protocols using AsyncOpenAI.
-Preserves existing production behavior for gpt-4.1 and text-embedding-3-small untouched.
+EPIC — OpenAI adapter: configures the OpenAI-compatible models for api.openai.com.
+
+Available whenever OPENAI_API_KEY is set; no network call is needed to decide that.
 """
 from __future__ import annotations
 
-import logging
-from typing import Any
-from openai import AsyncOpenAI
+import httpx
 
-from app.core.config import settings
+from app.services.providers.llmProvider import ChatModel, EmbeddingModel
+from app.services.providers.openAiCompatibleTransport import (
+    OpenAiCompatibleChatModel,
+    OpenAiCompatibleEmbeddingModel,
+    OpenAiCompatibleTransport,
+    buildOpenAiClient,
+)
 
-logger = logging.getLogger(__name__)
-
-
-class OpenAIProvider:
-    """Concrete OpenAI adapter satisfying LLMProvider and EmbeddingProvider protocols."""
-
-    def __init__(self, api_key: str | None = None, model: str | None = None) -> None:
-        self._api_key = api_key
-        self._model = model
-        self._client: AsyncOpenAI | None = None
-
-    def get_client(self) -> AsyncOpenAI | None:
-        """Return configured AsyncOpenAI client or None if API key is missing."""
-        key = self._api_key or settings.openai_api_key
-        if not key:
-            return None
-        if self._client is None or getattr(self._client, "api_key", None) != key:
-            self._client = AsyncOpenAI(
-                api_key=key,
-                timeout=30.0,
-                max_retries=3,
-            )
-        return self._client
-
-    async def chat_complete(
-        self,
-        messages: list[dict[str, Any]],
-        model: str | None = None,
-        response_format: dict[str, Any] | None = None,
-        temperature: float = 0.1,
-        max_tokens: int = 2500,
-        **kwargs: Any,
-    ) -> str:
-        """Execute chat completion using AsyncOpenAI with graceful fallback."""
-        client = self.get_client()
-        if client is None:
-            raise RuntimeError("OpenAI client unavailable (no API key configured)")
-
-        target_model = model or self._model or settings.openai_model
-        params: dict[str, Any] = {
-            "model": target_model,
-            "messages": messages,
-            "temperature": temperature,
-            "max_tokens": max_tokens,
-            **kwargs,
-        }
-        if response_format is not None:
-            params["response_format"] = response_format
-
-        try:
-            try:
-                response = await client.chat.completions.create(**params)
-            except Exception as first_exc:
-                if response_format is not None:
-                    params["response_format"] = {"type": "json_object"}
-                    response = await client.chat.completions.create(**params)
-                else:
-                    raise first_exc
-            return response.choices[0].message.content or "{}"
-        except Exception as exc:
-            logger.error("OpenAI chat completion failed: %s", exc)
-            raise
-
-    # ?? Embedding Provider Implementation ??????????????????????????????????????
-
-    @property
-    def dimension(self) -> int:
-        """text-embedding-3-small dimension."""
-        return 1536
-
-    def get_dimension(self) -> int:
-        return self.dimension
-
-    async def embed_text(self, text: str) -> list[float] | None:
-        """Generate an embedding vector via OpenAI text-embedding-3-small."""
-        client = self.get_client()
-        if client is None:
-            return None
-        try:
-            resp = await client.embeddings.create(
-                model="text-embedding-3-small",
-                input=text[:8000],
-            )
-            return resp.data[0].embedding
-        except Exception as exc:
-            logger.warning("OpenAI embedding failed: %s", exc, exc_info=True)
-            return None
-
-    async def embed(self, text: str) -> list[float] | None:
-        return await self.embed_text(text)
+OPENAI_TIMEOUT_SECONDS = 30.0
+OPENAI_MAX_RETRIES = 3
+OPENAI_EMBEDDING_MODEL = "text-embedding-3-small"
+# "By default, the length of the embedding vector is 1536 for text-embedding-3-small"
+# (https://developers.openai.com/api/docs/guides/embeddings, checked 2026-09-24).
+OPENAI_EMBEDDING_DIMENSION = 1536
+MISSING_KEY_REASON = "OPENAI_API_KEY is not set"
 
 
-class OpenAILLMProvider(OpenAIProvider):
-    """Explicit alias for LLMProvider usage."""
-    pass
+def buildOpenAiChatModel(apiKey: str, modelName: str, httpClient: httpx.AsyncClient | None = None) -> ChatModel:
+    transport = None
+    if apiKey:
+        client = _client(apiKey, httpClient)
+        transport = OpenAiCompatibleTransport(client, modelName, sendToolChoice=True)
+    return OpenAiCompatibleChatModel(modelName, transport, _configured, MISSING_KEY_REASON)
 
 
-class OpenAIEmbeddingProvider(OpenAIProvider):
-    """Explicit alias for EmbeddingProvider usage."""
-    pass
+def buildOpenAiEmbeddingModel(apiKey: str, httpClient: httpx.AsyncClient | None = None) -> EmbeddingModel:
+    client = _client(apiKey, httpClient) if apiKey else None
+    return OpenAiCompatibleEmbeddingModel(client, OPENAI_EMBEDDING_MODEL, OPENAI_EMBEDDING_DIMENSION, _configured)
+
+
+def _client(apiKey: str, httpClient: httpx.AsyncClient | None):
+    return buildOpenAiClient(
+        apiKey, timeoutSeconds=OPENAI_TIMEOUT_SECONDS, maxRetries=OPENAI_MAX_RETRIES, httpClient=httpClient,
+    )
+
+
+async def _configured() -> bool:
+    # A client exists only when a key was given, so reaching this check already means "configured".
+    return True
