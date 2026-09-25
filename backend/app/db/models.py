@@ -159,21 +159,6 @@ class SensorHistory(Base):
     readings: Mapped[list | None] = mapped_column(JSON, nullable=True)
 
 
-class SavedChecklist(Base):
-    """Inspection checklist extracted from an AI query result and saved for execution."""
-    __tablename__ = "saved_checklists"
-
-    id: Mapped[str] = mapped_column(String, primary_key=True)
-    equipment_id: Mapped[str] = mapped_column(String, index=True)
-    query_text: Mapped[str] = mapped_column(Text, default="")
-    risk_level: Mapped[str | None] = mapped_column(String, nullable=True)
-    status: Mapped[str] = mapped_column(String, default="open")  # open | in_progress | completed
-    # items: [{text, checked, notes}]
-    items: Mapped[list | None] = mapped_column(JSON, nullable=True)
-    outcome_notes: Mapped[str | None] = mapped_column(Text, nullable=True)
-    completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
-
 
 class SavedWorkOrder(Base):
     """Work order extracted from an AI query result, with interactive step tracking and feedback."""
@@ -236,8 +221,8 @@ class UserProfile(Base):
 class AuditLog(Base):
     """
     Append-only audit trail entry.
-    Written when a work order or checklist is created or completed, when live telemetry is ingested and
-    when an admin purge is requested; SCHEMA_REFERENCE.md lists the exact call sites.
+    Written when a work order is created or completed, when live telemetry is ingested and
+    when an admin purge is requested; README.md section 8 lists the exact call sites.
     No code path updates or deletes these rows and the admin purge refuses them;
     the database itself does not enforce that, so a direct SQL DELETE would succeed.
     """
@@ -246,7 +231,7 @@ class AuditLog(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     timestamp: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
     # Object context
-    object_type: Mapped[str] = mapped_column(String, index=True)   # work_order | checklist | sensor | system
+    object_type: Mapped[str] = mapped_column(String, index=True)   # work_order | sensor | system
     object_id: Mapped[str] = mapped_column(String, index=True)
     equipment_id: Mapped[str | None] = mapped_column(String, index=True, nullable=True)
     # Action

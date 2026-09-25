@@ -108,6 +108,3 @@ def audit(
         # No running loop (tests) — skip silently
         return None
 
-
-# Alias for explicit audit task creation
-create_audit_log = audit

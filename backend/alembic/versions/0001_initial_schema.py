@@ -112,21 +112,6 @@ def upgrade() -> None:
     sa.Column('val', sa.Integer(), nullable=False),
     sa.PrimaryKeyConstraint('id')
     )
-    op.create_table('saved_checklists',
-    sa.Column('id', sa.String(), nullable=False),
-    sa.Column('equipment_id', sa.String(), nullable=False),
-    sa.Column('query_text', sa.Text(), nullable=False),
-    sa.Column('risk_level', sa.String(), nullable=True),
-    sa.Column('status', sa.String(), nullable=False),
-    sa.Column('items', sa.JSON(), nullable=True),
-    sa.Column('outcome_notes', sa.Text(), nullable=True),
-    sa.Column('completed_at', sa.DateTime(), nullable=True),
-    sa.Column('created_at', sa.DateTime(), nullable=False),
-    sa.PrimaryKeyConstraint('id')
-    )
-    with op.batch_alter_table('saved_checklists', schema=None) as batch_op:
-        batch_op.create_index(batch_op.f('ix_saved_checklists_equipment_id'), ['equipment_id'], unique=False)
-
     op.create_table('saved_work_orders',
     sa.Column('id', sa.String(), nullable=False),
     sa.Column('equipment_id', sa.String(), nullable=False),
@@ -274,10 +259,6 @@ def downgrade() -> None:
         batch_op.drop_index(batch_op.f('ix_saved_work_orders_equipment_id'))
 
     op.drop_table('saved_work_orders')
-    with op.batch_alter_table('saved_checklists', schema=None) as batch_op:
-        batch_op.drop_index(batch_op.f('ix_saved_checklists_equipment_id'))
-
-    op.drop_table('saved_checklists')
     op.drop_table('graph_nodes')
     with op.batch_alter_table('graph_links', schema=None) as batch_op:
         batch_op.drop_index(batch_op.f('ix_graph_links_target'))
